@@ -6,20 +6,19 @@ import plotly.express as px
 # ==========================================
 # 0. 页面配置
 # ==========================================
-st.set_page_config(page_title="全球价值猎手", page_icon="🌍", layout="wide")
+st.set_page_config(page_title="全球价值猎手 v2.0", page_icon="🦁", layout="wide")
 
 st.markdown("""
 <style>
     .stApp {background-color: #f8f9fa;}
-    /* 优化表格字体 */
+    /* 调整表格字体大小，手机看更舒服 */
     div[data-testid="stDataFrame"] {font-size: 14px;}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 核心股票池 & 中文名称映射 (The Dictionary)
+# 1. 核心股票池 & 中文名称映射
 # ==========================================
-# 这里的 Key 是代码，Value 是我们想显示的中文名
 STOCK_MAP = {
     # --- 🇺🇸 美股科技 ---
     "AAPL": "苹果",
@@ -35,7 +34,7 @@ STOCK_MAP = {
     "PDD": "拼多多",
     
     # --- 🇺🇸 美股价值 ---
-    "BRK-B": "伯克希尔(巴菲特)",
+    "BRK-B": "伯克希尔",
     "JPM": "摩根大通",
     "KO": "可口可乐",
     "JNJ": "强生",
@@ -44,7 +43,8 @@ STOCK_MAP = {
     "MCD": "麦当劳",
     "DIS": "迪士尼",
     "NKE": "耐克",
-    "O": "Realty Income(月月付)",
+    "O": "Realty Income",
+    "PFE": "辉瑞",
 
     # --- 🇭🇰 港股核心 ---
     "0700.HK": "腾讯控股",
@@ -64,67 +64,77 @@ STOCK_MAP = {
     "000792.SZ": "盐湖股份",
     "601318.SS": "中国平安",
     "601857.SS": "中国石油",
-    "600900.SS": "长江电力"
+    "600900.SS": "长江电力",
+    "600030.SS": "中信证券"
 }
 
-# 定义分组，用于侧边栏选择
 MARKET_GROUPS = {
-    "🇺🇸 美股科技": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "INTC", "BABA", "PDD"],
-    "🇺🇸 美股价值": ["BRK-B", "JPM", "KO", "JNJ", "PG", "XOM", "MCD", "DIS", "NKE", "O"],
-    "🇭🇰 港股核心": ["0700.HK", "9988.HK", "3690.HK", "0941.HK", "0883.HK", "1299.HK", "0005.HK", "1088.HK"],
-    "🇨🇳 A股核心": ["600519.SS", "000858.SZ", "600036.SS", "002594.SZ", "000792.SZ", "601318.SS", "601857.SS", "600900.SS"]
+    "🇺🇸 美股科技 (MAG 7)": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "INTC", "BABA", "PDD"],
+    "🇺🇸 美股价值 (Buffett)": ["BRK-B", "JPM", "KO", "JNJ", "PG", "XOM", "MCD", "DIS", "NKE", "O", "PFE"],
+    "🇭🇰 港股核心 (High Div)": ["0700.HK", "9988.HK", "3690.HK", "0941.HK", "0883.HK", "1299.HK", "0005.HK", "1088.HK"],
+    "🇨🇳 A股核心 (Core Assets)": ["600519.SS", "000858.SZ", "600036.SS", "002594.SZ", "000792.SZ", "601318.SS", "601857.SS", "600900.SS", "600030.SS"]
 }
 
 # ==========================================
-# 2. 数据获取与筛选核心
+# 2. 数据获取与处理核心
 # ==========================================
+def format_large_num(num):
+    """辅助函数：把长数字转为'亿'单位"""
+    if num is None: return "N/A"
+    return f"{num / 100000000:.2f}亿"
+
 @st.cache_data(ttl=3600)
 def fetch_and_screen(group_name):
     tickers = MARKET_GROUPS[group_name]
     data_list = []
     
-    # 进度条
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     for i, symbol in enumerate(tickers):
-        # 获取中文名，如果没有定义，就用代码本身代替
         cn_name = STOCK_MAP.get(symbol, symbol)
-        status_text.text(f"正在扫描: {cn_name} ({symbol}) ...")
+        status_text.text(f"🔍 正在深度扫描: {cn_name} ({symbol}) ...")
         progress_bar.progress((i + 1) / len(tickers))
         
         try:
             stock = yf.Ticker(symbol)
             info = stock.info
             
-            # 容错处理：获取不到就填 0 或 999
+            # --- 核心指标获取 ---
             price = info.get('currentPrice', 0)
-            if price == 0 and 'regularMarketPrice' in info: # 备用字段
-                price = info['regularMarketPrice']
-
-            pe = info.get('trailingPE', 999)
-            pb = info.get('priceToBook', 999)
-            roe = info.get('returnOnEquity', 0)
-            div_yield = info.get('dividendYield', 0)
+            if price == 0 and 'regularMarketPrice' in info: price = info['regularMarketPrice']
             
-            # None值处理
+            pe = info.get('trailingPE', 999)
             if pe is None: pe = 999
-            if pb is None: pb = 999
+            
+            roe = info.get('returnOnEquity', 0)
             if roe is None: roe = 0
+            
+            div_yield = info.get('dividendYield', 0)
             if div_yield is None: div_yield = 0
             
-            # 组合名称列：中文名 + (代码)
-            # 比如: 苹果 (AAPL)
+            # ✅ 新增：毛利率 (护城河指标)
+            gross_margin = info.get('grossMargins', 0)
+            if gross_margin is None: gross_margin = 0
+            
+            # ✅ 新增：自由现金流 (真钱指标)
+            fcf = info.get('freeCashflow', 0)
+            # 如果取不到FCF，尝试用 经营现金流 代替展示
+            if fcf is None: fcf = info.get('operatingCashflow', 0)
+
+            # 组合展示名称
             display_name = f"{cn_name} ({symbol})"
             
             data_list.append({
-                "名称 (代码)": display_name,
+                "名称": display_name,
                 "现价": price,
                 "PE (市盈率)": round(pe, 2),
-                "PB (市净率)": round(pb, 2),
-                "ROE": round(roe * 100, 2),   # 简化表头
+                "ROE%": round(roe * 100, 2),
+                "毛利率%": round(gross_margin * 100, 2), # 新增
                 "股息率%": round(div_yield * 100, 2),
-                "raw_roe": roe # 用于排序的隐藏列
+                "自由现金流": format_large_num(fcf),      # 新增
+                "raw_roe": roe, # 排序用
+                "raw_gm": gross_margin # 绘图用
             })
         except Exception as e:
             continue
@@ -135,75 +145,101 @@ def fetch_and_screen(group_name):
     return pd.DataFrame(data_list)
 
 # ==========================================
-# 3. 侧边栏：筛选条件
+# 3. 侧边栏筛选
 # ==========================================
 with st.sidebar:
-    st.header("🎯 价值筛选器")
+    st.header("🦁 猎手参数设置")
     
-    group_choice = st.selectbox("选择板块", list(MARKET_GROUPS.keys()))
+    group_choice = st.selectbox("选择狩猎战场", list(MARKET_GROUPS.keys()))
     
     st.divider()
-    st.caption("筛选标准 (漏斗)")
-    max_pe = st.slider("PE (市盈率) 上限", 0, 100, 30)
-    min_roe = st.slider("ROE (净资产收益率) 下限", 0, 40, 10)
-    min_div = st.slider("股息率% 下限", 0.0, 8.0, 1.0)
+    st.subheader("🎯 价值漏斗")
     
+    col_a, col_b = st.columns(2)
+    with col_a:
+        max_pe = st.number_input("PE 上限", value=30, step=5)
+        min_roe = st.number_input("ROE 下限%", value=10, step=1)
+    with col_b:
+        min_gm = st.number_input("毛利 下限%", value=20, step=5, help="低于20%通常竞争激烈")
+        min_div = st.number_input("股息 下限%", value=0.0, step=0.5)
+
+    st.info("""
+    **指标说明：**
+    1. **ROE**: 赚钱能力的统帅 (>15%为优)
+    2. **毛利率**: 护城河的深浅 (>40%为优)
+    3. **自由现金流**: 公司的真金白银
+    """)
+
 # ==========================================
-# 4. 主界面
+# 4. 主界面展示
 # ==========================================
 st.title(f"🌍 全球价值猎手: {group_choice}")
 
-# 1. 获取数据
 df = fetch_and_screen(group_choice)
 
 if df.empty:
-    st.error("数据获取失败，请刷新重试。")
+    st.error("无法连接全球市场数据，请检查网络。")
     st.stop()
 
-# 2. 执行筛选
+# --- 筛选逻辑 ---
 filtered_df = df[
     (df["PE (市盈率)"] <= max_pe) & 
     (df["PE (市盈率)"] > 0) & 
-    (df["ROE"] >= min_roe) & 
+    (df["ROE%"] >= min_roe) &
+    (df["毛利率%"] >= min_gm) & # 新增筛选
     (df["股息率%"] >= min_div)
-].sort_values(by="raw_roe", ascending=False) # 按ROE真实值排序
+].sort_values(by="raw_roe", ascending=False)
 
-# 删除辅助排序列，不显示给用户
-display_df = filtered_df.drop(columns=["raw_roe"])
+# 删除辅助列
+display_df = filtered_df.drop(columns=["raw_roe", "raw_gm"])
 
-# 3. 结果展示
-col1, col2 = st.columns([3, 2])
+# --- 核心数据表 ---
+st.subheader(f"🏆 幸存名单 ({len(display_df)}/{len(df)})")
+
+if not display_df.empty:
+    # 颜色高亮逻辑：ROE越深绿越好，毛利率越深蓝越好
+    st.dataframe(
+        display_df.style
+        .background_gradient(subset=["ROE%"], cmap="Greens")
+        .background_gradient(subset=["毛利率%"], cmap="Blues")
+        .format({"现价": "{:.2f}", "PE (市盈率)": "{:.1f}"}),
+        use_container_width=True,
+        height=500,
+        hide_index=True
+    )
+else:
+    st.warning("🧹 全军覆没！当前标准太严苛，请放宽条件（试试降低毛利率或ROE要求）。")
+
+# --- 可视化图表 ---
+st.divider()
+col1, col2 = st.columns(2)
 
 with col1:
-    st.subheader(f"🏆 优选名单 ({len(display_df)}/{len(df)})")
-    if not display_df.empty:
-        # 样式美化：ROE 背景色
-        st.dataframe(
-            display_df.style.background_gradient(subset=["ROE"], cmap="Greens")
-                             .format({"现价": "{:.2f}", "PE (市盈率)": "{:.1f}"}),
-            use_container_width=True,
-            height=500,
-            hide_index=True # 隐藏索引列，更像APP
-        )
-    else:
-        st.info("🧹 当前标准下没有股票入选，请放宽条件。")
-
-with col2:
-    st.subheader("📊 价值分布图")
-    if not display_df.empty:
-        # 气泡图优化
+    st.subheader("💰 护城河 vs 赚钱能力")
+    if not filtered_df.empty:
+        # X轴毛利，Y轴ROE
         fig = px.scatter(
-            display_df, 
-            x="PE (市盈率)", 
-            y="ROE", 
-            size="股息率%", 
-            color="名称 (代码)", # 颜色区分不同股票
-            hover_name="名称 (代码)",
-            size_max=45,
-            title="越靠左上角越好 (低PE, 高ROE)"
+            filtered_df,
+            x="毛利率%",
+            y="ROE%",
+            size="PE (市盈率)", # 气泡大小反直觉：这里越大越贵
+            color="名称",
+            hover_data=["现价", "自由现金流"],
+            title="右上角为【高毛利+高ROE】黄金区"
         )
         st.plotly_chart(fig, use_container_width=True)
 
-# 4. 底部声明
-st.divider()
-st.caption("数据来源: Yahoo Finance | 仅包含核心资产池 | 延迟约 15 分钟")
+with col2:
+    st.subheader("💸 谁是现金奶牛？")
+    if not filtered_df.empty:
+        # 简单的柱状图对比现金流
+        # 注意：这里仅仅是数字对比，不同货币单位（美元/人民币）混合在一起，仅作粗略参考
+        fig2 = px.bar(
+            filtered_df.sort_values(by="毛利率%", ascending=True),
+            x="毛利率%",
+            y="名称",
+            orientation='h',
+            color="ROE%",
+            title="毛利率排行榜"
+        )
+        st.plotly_chart(fig2, use_container_width=True)
