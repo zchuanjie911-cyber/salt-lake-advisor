@@ -1,173 +1,174 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import yfinance as yf
-import plotly.graph_objects as go
-import datetime
+import plotly.express as px
 
 # ==========================================
-# 1. 页面配置 (手机优先)
+# 0. 页面配置
 # ==========================================
-st.set_page_config(page_title="盐湖军师(云端版)", page_icon="☁️", layout="centered")
-hide_style = """
+st.set_page_config(page_title="全球价值猎手", page_icon="🌍", layout="wide")
+
+st.markdown("""
 <style>
-#MainMenu {visibility: hidden;}
-footer {visibility: hidden;}
-.stApp {padding-top: 10px;}
-/* 增大手机上的字体可读性 */
-.big-font {font-size:24px !important; font-weight: bold;}
+    .stApp {background-color: #f8f9fa;}
+    div[data-testid="stMetricValue"] {font-size: 18px;}
 </style>
-"""
-st.markdown(hide_style, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
 # ==========================================
-# 2. 核心逻辑：互联网数据获取
+# 1. 定义核心股票池 (The Core Universe)
 # ==========================================
-@st.cache_data(ttl=60) # 缓存60秒，防止刷新太快被封IP
-def get_web_data(symbol="000792.SZ"):
-    """
-    从 Yahoo Finance 获取实时数据
-    """
-    stock = yf.Ticker(symbol)
-    
-    # 1. 获取今日实时行情
-    # yfinance 有时实时数据会有延迟，获取最近5天数据比较稳
-    hist = stock.history(period="1y") 
-    
-    if hist.empty:
-        return None, None
-    
-    current_price = hist['Close'].iloc[-1]
-    prev_close = hist['Close'].iloc[-2]
-    change_pct = (current_price - prev_close) / prev_close
-    
-    return hist, current_price, change_pct
-
-def calculate_signals(df, current_price):
-    """
-    在本地计算策略信号 (不依赖 QMT)
-    """
-    # --- A. 模拟 AI 趋势打分 (基于技术指标) ---
-    # 计算 MACD
-    exp12 = df['Close'].ewm(span=12, adjust=False).mean()
-    exp26 = df['Close'].ewm(span=26, adjust=False).mean()
-    macd = exp12 - exp26
-    signal = macd.ewm(span=9, adjust=False).mean()
-    
-    # 计算 RSI
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs)).iloc[-1]
-    
-    # 综合打分 (0~100)
-    # MACD金叉 +30分, RSI在50以上 +20分...
-    ai_score = 50
-    if macd.iloc[-1] > signal.iloc[-1]: ai_score += 20
-    if rsi < 30: ai_score += 30 (超跌反弹)
-    elif rsi > 70: ai_score -= 30 (超买风险)
-    else: ai_score += 10
-    
-    ai_score = max(0, min(100, ai_score)) # 限制在0-100
-    
-    return ai_score, rsi
+# 这是一个精选的全球核心资产池，您可以随时在代码里添加
+STOCK_POOL = {
+    "🇺🇸 美股科技": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "INTC"],
+    "🇺🇸 美股价值": ["BRK-B", "JPM", "KO", "JNJ", "PG", "XOM", "CVX", "MCD", "DIS", "NKE"],
+    "🇭🇰 港股核心": ["0700.HK", "9988.HK", "3690.HK", "0941.HK", "0883.HK", "1299.HK", "0005.HK"],
+    "🇨🇳 A股核心": ["600519.SS", "000858.SZ", "600036.SS", "002594.SZ", "000792.SZ", "601318.SS", "601857.SS"]
+}
 
 # ==========================================
-# 3. 手机 UI 界面
+# 2. 数据获取与筛选核心
 # ==========================================
-
-# --- 侧边栏：输入参数 ---
-with st.sidebar:
-    st.header("⚙️ 参数设置")
-    symbol = st.text_input("股票代码", "000792.SZ")
-    eps = st.number_input("最新 EPS (每股收益)", value=1.5, help="用于计算PE估值")
-    fair_pe = st.slider("合理 PE 倍数", 5, 20, 12)
-
-# --- 主程序 ---
-try:
-    hist_df, price, change = get_web_data(symbol)
+@st.cache_data(ttl=3600) # 缓存1小时，避免每次刷新都请求
+def fetch_and_screen(market_choice):
+    """
+    批量获取股票基本面数据
+    """
+    tickers = STOCK_POOL[market_choice]
+    data_list = []
     
-    if hist_df is None:
-        st.error("无法获取数据，请检查股票代码或网络。")
-        st.stop()
-
-    ai_score, rsi = calculate_signals(hist_df, price)
+    # 创建进度条
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     
-    # 计算估值状态
-    pe_ratio = price / eps
-    fair_price = eps * fair_pe
-    val_status = "低估" if price < fair_price * 0.85 else "高估" if price > fair_price * 1.15 else "合理"
-
-    # --- 1. 顶部状态卡片 ---
-    st.markdown(f"### {symbol} 实时监控")
-    
-    col_a, col_b = st.columns([2, 1])
-    with col_a:
-        color = "red" if change > 0 else "green"
-        st.markdown(f"<h1 style='color:{color}; margin:0'>¥ {price:.2f}</h1>", unsafe_allow_html=True)
-    with col_b:
-        st.metric("涨跌幅", f"{change*100:.2f}%")
-
-    # --- 2. 核心决策大字 ---
-    st.divider()
-    decision = "😴 观望"
-    bg_color = "#f0f0f0"
-    
-    if val_status == "低估" and ai_score > 60:
-        decision = "💎 机会: 底部启动"
-        bg_color = "#d4edda" # 浅绿
-    elif val_status == "高估" and ai_score < 40:
-        decision = "⚠️ 风险: 高位见顶"
-        bg_color = "#f8d7da" # 浅红
-    elif ai_score > 80:
-        decision = "🔥 趋势: 强势上涨"
-        bg_color = "#fff3cd" # 浅黄
-
-    st.markdown(f"""
-        <div style="background-color: {bg_color}; padding: 15px; border-radius: 10px; text-align: center;">
-            <h2 style="margin:0; color: #333;">{decision}</h2>
-            <p style="margin:5px 0 0 0; color: gray;">AI信心: {ai_score:.0f}分 | 估值: {val_status}</p>
-        </div>
-    """, unsafe_allow_html=True)
-
-    # --- 3. 价值 & 网格 参考 ---
-    st.subheader("📊 操盘参考")
-    
-    tab1, tab2 = st.tabs(["价值锚点", "网格挂单"])
-    
-    with tab1:
-        c1, c2 = st.columns(2)
-        c1.metric("当前 PE", f"{pe_ratio:.1f}倍")
-        c2.metric("合理价格", f"{fair_price:.1f} 元")
+    for i, symbol in enumerate(tickers):
+        status_text.text(f"正在扫描: {symbol} ...")
+        progress_bar.progress((i + 1) / len(tickers))
         
-        if val_status == "低估":
-            st.success(f"股价低于合理价 {((fair_price-price)/fair_price)*100:.1f}%，具备安全边际。")
-        else:
-            st.info("耐心等待价格回归价值中枢。")
-
-    with tab2:
-        st.caption("基于 ATR 波动的日内网格参考：")
-        grid_step = price * 0.015 # 假设1.5%网格
-        st.table(pd.DataFrame([
-            {"方向": "🔴 压力卖出", "价格": f"¥ {price + grid_step:.2f}"},
-            {"方向": "⚪ 当前基准", "价格": f"¥ {price:.2f}"},
-            {"方向": "🟢 支撑买入", "价格": f"¥ {price - grid_step:.2f}"},
-        ]))
-
-    # --- 4. 走势图 (Plotly 交互式) ---
-    st.subheader("📈 趋势分析")
-    # 只画最近 60 天
-    recent_df = hist_df.tail(60)
-    fig = go.Figure(data=[go.Candlestick(x=recent_df.index,
-                    open=recent_df['Open'], high=recent_df['High'],
-                    low=recent_df['Low'], close=recent_df['Close'])])
-    fig.update_layout(height=300, margin=dict(l=0,r=0,t=0,b=0))
-    st.plotly_chart(fig, use_container_width=True)
+        try:
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            
+            # 提取核心价值指标
+            # 注意：不同市场的数据可能缺失，需要容错处理
+            pe = info.get('trailingPE', 999)
+            pb = info.get('priceToBook', 999)
+            roe = info.get('returnOnEquity', 0)
+            div_yield = info.get('dividendYield', 0)
+            if div_yield is None: div_yield = 0
+            
+            name = info.get('shortName', symbol)
+            price = info.get('currentPrice', 0)
+            
+            data_list.append({
+                "代码": symbol,
+                "名称": name,
+                "现价": price,
+                "PE (市盈率)": round(pe, 2) if pe else 999,
+                "PB (市净率)": round(pb, 2) if pb else 999,
+                "ROE (净资产收益率)": round(roe * 100, 2) if roe else 0,
+                "股息率%": round(div_yield * 100, 2)
+            })
+        except Exception as e:
+            continue
+            
+    progress_bar.empty()
+    status_text.empty()
     
-    if st.button("🔄 刷新数据"):
-        st.rerun()
+    return pd.DataFrame(data_list)
 
-except Exception as e:
-    st.error(f"网络连接错误，无法获取 Internet 数据。\n\n错误信息: {e}")
-    st.caption("提示：请确保您的电脑可以访问 Yahoo Finance (或者后续改为 akshare 国内源)。")
+# ==========================================
+# 3. 侧边栏：筛选条件
+# ==========================================
+with st.sidebar:
+    st.header("🎯 价值筛选器")
+    
+    market = st.selectbox("选择市场", list(STOCK_POOL.keys()))
+    
+    st.divider()
+    st.subheader("设定标准")
+    max_pe = st.slider("最高 PE (越低越便宜)", 0, 100, 25)
+    max_pb = st.slider("最高 PB (越低越安全)", 0.0, 10.0, 3.0)
+    min_roe = st.slider("最低 ROE (越高越赚钱)", 0, 50, 15)
+    min_div = st.slider("最低 股息率%", 0.0, 10.0, 2.0)
+    
+    st.info("💡 经典价值公式：低 PE + 高 ROE + 稳定股息")
+
+# ==========================================
+# 4. 主界面
+# ==========================================
+st.title(f"🌍 全球价值猎手: {market}")
+
+# 1. 获取数据
+df = fetch_and_screen(market)
+
+if df.empty:
+    st.error("无法获取数据，请检查网络连接 (Streamlit Cloud 最佳)")
+    st.stop()
+
+# 2. 执行筛选逻辑
+# 使用 Pandas 进行过滤
+filtered_df = df[
+    (df["PE (市盈率)"] <= max_pe) & 
+    (df["PE (市盈率)"] > 0) & # 过滤亏损股
+    (df["PB (市净率)"] <= max_pb) & 
+    (df["ROE (净资产收益率)"] >= min_roe) & 
+    (df["股息率%"] >= min_div)
+].sort_values(by="ROE (净资产收益率)", ascending=False) # 按赚钱能力排序
+
+# 3. 结果展示
+col1, col2 = st.columns([3, 1])
+
+with col1:
+    st.subheader(f"🔍 筛选结果 ({len(filtered_df)} 只)")
+    if not filtered_df.empty:
+        # 高亮显示数据表
+        st.dataframe(
+            filtered_df.style.background_gradient(subset=["ROE (净资产收益率)"], cmap="Greens")
+                             .format({"现价": "{:.2f}", "PE (市盈率)": "{:.1f}"}),
+            use_container_width=True,
+            height=400
+        )
+    else:
+        st.warning("⚠️ 当前条件下没有符合的标的，请尝试放宽筛选标准。")
+
+with col2:
+    st.subheader("📊 估值气泡图")
+    if not filtered_df.empty:
+        # 画图：X轴=PE, Y轴=ROE, 大小=股息率
+        fig = px.scatter(
+            filtered_df, 
+            x="PE (市盈率)", 
+            y="ROE (净资产收益率)", 
+            size="股息率%", 
+            color="代码",
+            hover_name="名称",
+            size_max=40,
+            title="性价比分布 (右上角为优质区)"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+# 4. 个股深度透视 (One-Click Analysis)
+st.divider()
+st.subheader("🔬 个股深度透视")
+selected_stock = st.selectbox("选择一只股票查看详情:", df["代码"].tolist())
+
+if st.button("开始 AI 诊断"):
+    stock_info = df[df["代码"] == selected_stock].iloc[0]
+    
+    # 模拟一个简单的 AI 评语
+    score = 0
+    if stock_info["PE (市盈率)"] < 15: score += 30
+    if stock_info["ROE (净资产收益率)"] > 20: score += 30
+    if stock_info["股息率%"] > 3: score += 20
+    score += 20 # 基础分
+    
+    c1, c2, c3 = st.columns(3)
+    c1.metric("当前价格", f"{stock_info['现价']}")
+    c2.metric("价值评分", f"{score} 分")
+    
+    decision = "买入" if score > 80 else "持有" if score > 60 else "观望"
+    color = "green" if score > 80 else "orange"
+    c3.markdown(f"### 建议: :{color}[{decision}]")
+    
+    st.json(stock_info.to_dict()) # 显示原始数据详情
