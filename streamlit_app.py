@@ -11,63 +11,120 @@ st.set_page_config(page_title="全球价值猎手", page_icon="🌍", layout="wi
 st.markdown("""
 <style>
     .stApp {background-color: #f8f9fa;}
-    div[data-testid="stMetricValue"] {font-size: 18px;}
+    /* 优化表格字体 */
+    div[data-testid="stDataFrame"] {font-size: 14px;}
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 1. 定义核心股票池 (The Core Universe)
+# 1. 核心股票池 & 中文名称映射 (The Dictionary)
 # ==========================================
-# 这是一个精选的全球核心资产池，您可以随时在代码里添加
-STOCK_POOL = {
-    "🇺🇸 美股科技": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "INTC"],
-    "🇺🇸 美股价值": ["BRK-B", "JPM", "KO", "JNJ", "PG", "XOM", "CVX", "MCD", "DIS", "NKE"],
-    "🇭🇰 港股核心": ["0700.HK", "9988.HK", "3690.HK", "0941.HK", "0883.HK", "1299.HK", "0005.HK"],
-    "🇨🇳 A股核心": ["600519.SS", "000858.SZ", "600036.SS", "002594.SZ", "000792.SZ", "601318.SS", "601857.SS"]
+# 这里的 Key 是代码，Value 是我们想显示的中文名
+STOCK_MAP = {
+    # --- 🇺🇸 美股科技 ---
+    "AAPL": "苹果",
+    "MSFT": "微软",
+    "GOOG": "谷歌",
+    "AMZN": "亚马逊",
+    "META": "Meta(脸书)",
+    "TSLA": "特斯拉",
+    "NVDA": "英伟达",
+    "AMD": "超威半导体",
+    "INTC": "英特尔",
+    "BABA": "阿里巴巴(美)",
+    "PDD": "拼多多",
+    
+    # --- 🇺🇸 美股价值 ---
+    "BRK-B": "伯克希尔(巴菲特)",
+    "JPM": "摩根大通",
+    "KO": "可口可乐",
+    "JNJ": "强生",
+    "PG": "宝洁",
+    "XOM": "埃克森美孚",
+    "MCD": "麦当劳",
+    "DIS": "迪士尼",
+    "NKE": "耐克",
+    "O": "Realty Income(月月付)",
+
+    # --- 🇭🇰 港股核心 ---
+    "0700.HK": "腾讯控股",
+    "9988.HK": "阿里巴巴(港)",
+    "3690.HK": "美团",
+    "0941.HK": "中国移动",
+    "0883.HK": "中国海洋石油",
+    "1299.HK": "友邦保险",
+    "0005.HK": "汇丰控股",
+    "1088.HK": "中国神华",
+
+    # --- 🇨🇳 A股核心 ---
+    "600519.SS": "贵州茅台",
+    "000858.SZ": "五粮液",
+    "600036.SS": "招商银行",
+    "002594.SZ": "比亚迪",
+    "000792.SZ": "盐湖股份",
+    "601318.SS": "中国平安",
+    "601857.SS": "中国石油",
+    "600900.SS": "长江电力"
+}
+
+# 定义分组，用于侧边栏选择
+MARKET_GROUPS = {
+    "🇺🇸 美股科技": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "INTC", "BABA", "PDD"],
+    "🇺🇸 美股价值": ["BRK-B", "JPM", "KO", "JNJ", "PG", "XOM", "MCD", "DIS", "NKE", "O"],
+    "🇭🇰 港股核心": ["0700.HK", "9988.HK", "3690.HK", "0941.HK", "0883.HK", "1299.HK", "0005.HK", "1088.HK"],
+    "🇨🇳 A股核心": ["600519.SS", "000858.SZ", "600036.SS", "002594.SZ", "000792.SZ", "601318.SS", "601857.SS", "600900.SS"]
 }
 
 # ==========================================
 # 2. 数据获取与筛选核心
 # ==========================================
-@st.cache_data(ttl=3600) # 缓存1小时，避免每次刷新都请求
-def fetch_and_screen(market_choice):
-    """
-    批量获取股票基本面数据
-    """
-    tickers = STOCK_POOL[market_choice]
+@st.cache_data(ttl=3600)
+def fetch_and_screen(group_name):
+    tickers = MARKET_GROUPS[group_name]
     data_list = []
     
-    # 创建进度条
+    # 进度条
     progress_bar = st.progress(0)
     status_text = st.empty()
     
     for i, symbol in enumerate(tickers):
-        status_text.text(f"正在扫描: {symbol} ...")
+        # 获取中文名，如果没有定义，就用代码本身代替
+        cn_name = STOCK_MAP.get(symbol, symbol)
+        status_text.text(f"正在扫描: {cn_name} ({symbol}) ...")
         progress_bar.progress((i + 1) / len(tickers))
         
         try:
             stock = yf.Ticker(symbol)
             info = stock.info
             
-            # 提取核心价值指标
-            # 注意：不同市场的数据可能缺失，需要容错处理
+            # 容错处理：获取不到就填 0 或 999
+            price = info.get('currentPrice', 0)
+            if price == 0 and 'regularMarketPrice' in info: # 备用字段
+                price = info['regularMarketPrice']
+
             pe = info.get('trailingPE', 999)
             pb = info.get('priceToBook', 999)
             roe = info.get('returnOnEquity', 0)
             div_yield = info.get('dividendYield', 0)
+            
+            # None值处理
+            if pe is None: pe = 999
+            if pb is None: pb = 999
+            if roe is None: roe = 0
             if div_yield is None: div_yield = 0
             
-            name = info.get('shortName', symbol)
-            price = info.get('currentPrice', 0)
+            # 组合名称列：中文名 + (代码)
+            # 比如: 苹果 (AAPL)
+            display_name = f"{cn_name} ({symbol})"
             
             data_list.append({
-                "代码": symbol,
-                "名称": name,
+                "名称 (代码)": display_name,
                 "现价": price,
-                "PE (市盈率)": round(pe, 2) if pe else 999,
-                "PB (市净率)": round(pb, 2) if pb else 999,
-                "ROE (净资产收益率)": round(roe * 100, 2) if roe else 0,
-                "股息率%": round(div_yield * 100, 2)
+                "PE (市盈率)": round(pe, 2),
+                "PB (市净率)": round(pb, 2),
+                "ROE": round(roe * 100, 2),   # 简化表头
+                "股息率%": round(div_yield * 100, 2),
+                "raw_roe": roe # 用于排序的隐藏列
             })
         except Exception as e:
             continue
@@ -83,92 +140,70 @@ def fetch_and_screen(market_choice):
 with st.sidebar:
     st.header("🎯 价值筛选器")
     
-    market = st.selectbox("选择市场", list(STOCK_POOL.keys()))
+    group_choice = st.selectbox("选择板块", list(MARKET_GROUPS.keys()))
     
     st.divider()
-    st.subheader("设定标准")
-    max_pe = st.slider("最高 PE (越低越便宜)", 0, 100, 25)
-    max_pb = st.slider("最高 PB (越低越安全)", 0.0, 10.0, 3.0)
-    min_roe = st.slider("最低 ROE (越高越赚钱)", 0, 50, 15)
-    min_div = st.slider("最低 股息率%", 0.0, 10.0, 2.0)
+    st.caption("筛选标准 (漏斗)")
+    max_pe = st.slider("PE (市盈率) 上限", 0, 100, 30)
+    min_roe = st.slider("ROE (净资产收益率) 下限", 0, 40, 10)
+    min_div = st.slider("股息率% 下限", 0.0, 8.0, 1.0)
     
-    st.info("💡 经典价值公式：低 PE + 高 ROE + 稳定股息")
-
 # ==========================================
 # 4. 主界面
 # ==========================================
-st.title(f"🌍 全球价值猎手: {market}")
+st.title(f"🌍 全球价值猎手: {group_choice}")
 
 # 1. 获取数据
-df = fetch_and_screen(market)
+df = fetch_and_screen(group_choice)
 
 if df.empty:
-    st.error("无法获取数据，请检查网络连接 (Streamlit Cloud 最佳)")
+    st.error("数据获取失败，请刷新重试。")
     st.stop()
 
-# 2. 执行筛选逻辑
-# 使用 Pandas 进行过滤
+# 2. 执行筛选
 filtered_df = df[
     (df["PE (市盈率)"] <= max_pe) & 
-    (df["PE (市盈率)"] > 0) & # 过滤亏损股
-    (df["PB (市净率)"] <= max_pb) & 
-    (df["ROE (净资产收益率)"] >= min_roe) & 
+    (df["PE (市盈率)"] > 0) & 
+    (df["ROE"] >= min_roe) & 
     (df["股息率%"] >= min_div)
-].sort_values(by="ROE (净资产收益率)", ascending=False) # 按赚钱能力排序
+].sort_values(by="raw_roe", ascending=False) # 按ROE真实值排序
+
+# 删除辅助排序列，不显示给用户
+display_df = filtered_df.drop(columns=["raw_roe"])
 
 # 3. 结果展示
-col1, col2 = st.columns([3, 1])
+col1, col2 = st.columns([3, 2])
 
 with col1:
-    st.subheader(f"🔍 筛选结果 ({len(filtered_df)} 只)")
-    if not filtered_df.empty:
-        # 高亮显示数据表
+    st.subheader(f"🏆 优选名单 ({len(display_df)}/{len(df)})")
+    if not display_df.empty:
+        # 样式美化：ROE 背景色
         st.dataframe(
-            filtered_df.style.background_gradient(subset=["ROE (净资产收益率)"], cmap="Greens")
+            display_df.style.background_gradient(subset=["ROE"], cmap="Greens")
                              .format({"现价": "{:.2f}", "PE (市盈率)": "{:.1f}"}),
             use_container_width=True,
-            height=400
+            height=500,
+            hide_index=True # 隐藏索引列，更像APP
         )
     else:
-        st.warning("⚠️ 当前条件下没有符合的标的，请尝试放宽筛选标准。")
+        st.info("🧹 当前标准下没有股票入选，请放宽条件。")
 
 with col2:
-    st.subheader("📊 估值气泡图")
-    if not filtered_df.empty:
-        # 画图：X轴=PE, Y轴=ROE, 大小=股息率
+    st.subheader("📊 价值分布图")
+    if not display_df.empty:
+        # 气泡图优化
         fig = px.scatter(
-            filtered_df, 
+            display_df, 
             x="PE (市盈率)", 
-            y="ROE (净资产收益率)", 
+            y="ROE", 
             size="股息率%", 
-            color="代码",
-            hover_name="名称",
-            size_max=40,
-            title="性价比分布 (右上角为优质区)"
+            color="名称 (代码)", # 颜色区分不同股票
+            hover_name="名称 (代码)",
+            size_max=45,
+            title="越靠左上角越好 (低PE, 高ROE)"
         )
         st.plotly_chart(fig, use_container_width=True)
 
-# 4. 个股深度透视 (One-Click Analysis)
+# 4. 底部声明
 st.divider()
-st.subheader("🔬 个股深度透视")
-selected_stock = st.selectbox("选择一只股票查看详情:", df["代码"].tolist())
-
-if st.button("开始 AI 诊断"):
-    stock_info = df[df["代码"] == selected_stock].iloc[0]
-    
-    # 模拟一个简单的 AI 评语
-    score = 0
-    if stock_info["PE (市盈率)"] < 15: score += 30
-    if stock_info["ROE (净资产收益率)"] > 20: score += 30
-    if stock_info["股息率%"] > 3: score += 20
-    score += 20 # 基础分
-    
-    c1, c2, c3 = st.columns(3)
-    c1.metric("当前价格", f"{stock_info['现价']}")
-    c2.metric("价值评分", f"{score} 分")
-    
-    decision = "买入" if score > 80 else "持有" if score > 60 else "观望"
-    color = "green" if score > 80 else "orange"
-    c3.markdown(f"### 建议: :{color}[{decision}]")
-    
-    st.json(stock_info.to_dict()) # 显示原始数据详情
+st.caption("数据来源: Yahoo Finance | 仅包含核心资产池 | 延迟约 15 分钟")
