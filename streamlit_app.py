@@ -9,29 +9,30 @@ from concurrent.futures import ThreadPoolExecutor
 # ==========================================
 # 0. Tushare 初始化与数据源配置
 # ==========================================
-# 安全地导入 Tushare 并获取 Token
+# 检查并初始化 Tushare
 try:
     import tushare as ts
     TUSHARE_TOKEN = st.secrets.get("TUSHARE_TOKEN") 
     pro = ts.pro_api(TUSHARE_TOKEN) if TUSHARE_TOKEN else None
 except ImportError:
     pro = None
-except Exception as e:
+except Exception:
     pro = None
-    st.sidebar.error(f"Tushare 初始化失败: {e}")
 
 # 初始化时在侧边栏提示 Tushare 状态
 if pro is None and TUSHARE_TOKEN is None:
-    st.sidebar.warning("Tushare Token未配置，国内股票数据质量可能较低。请在Secrets中设置TUSHARE_TOKEN。")
+    st.sidebar.warning("Tushare Token未配置，国内股票数据可能较低。请在Secrets中设置TUSHARE_TOKEN。")
+elif pro is None and TUSHARE_TOKEN is not None:
+    st.sidebar.error("Tushare 初始化失败或 Token 无效。")
 elif pro is not None:
     st.sidebar.success("Tushare 连接成功！")
 
 
 # ==========================================
-# 1. 数据字典与智能识别
+# 1. 数据字典与智能识别 (新增股票)
 # ==========================================
 STOCK_MAP = {
-    # 核心美股 - Tech & Mega Cap
+    # 核心美股
     "AAPL": "苹果", "MSFT": "微软", "GOOG": "谷歌", "AMZN": "亚马逊", "META": "Meta", "TSLA": "特斯拉", "NVDA": "英伟达", "AMD": "超威半导体",
     "TSM": "台积电", "ASML": "阿斯麦", "BABA": "阿里巴巴(美)", "PDD": "拼多多",
     # 核心美股 - Moat & Value
@@ -40,16 +41,19 @@ STOCK_MAP = {
     # 核心港股
     "0700.HK": "腾讯控股", "9988.HK": "阿里巴巴(港)", "3690.HK": "美团", "0388.HK": "香港交易所", "0941.HK": "中国移动", "0883.HK": "中国海洋石油",
     "1810.HK": "小米集团", "1024.HK": "快手", "1299.HK": "友邦保险", "0005.HK": "汇丰控股",
-    # 核心A股
+    # 核心A股 (新增 新易盛 卧龙电驱)
     "600519.SS": "贵州茅台", "000858.SZ": "五粮液", "600900.SS": "长江电力", "300750.SZ": "宁德时代", "600036.SS": "招商银行", 
     "601318.SS": "中国平安", "600188.SS": "中煤能源", "601088.SS": "中国神华(A)", "600887.SS": "伊利股份", "600585.SS": "海螺水泥",
-    "002714.SZ": "牧原股份", "600030.SS": "中信证券", "002594.SZ": "比亚迪", "300760.SZ": "迈瑞医疗"
+    "002714.SZ": "牧原股份", "600030.SS": "中信证券", "002594.SZ": "比亚迪", "300760.SZ": "迈瑞医疗",
+    "300502.SZ": "新易盛",  # <-- 新增
+    "600580.SS": "卧龙电驱" # <-- 新增
 }
 
 NAME_TO_TICKER = {v: k for k, v in STOCK_MAP.items()}
 NAME_TO_TICKER.update({
     "腾讯": "0700.HK", "茅台": "600519.SS", "平安": "601318.SS", "中煤": "600188.SS", "神华": "601088.SS",
-    "苹果": "AAPL", "微软": "MSFT", "英伟达": "NVDA", "招行": "600036.SS", "伊利": "600887.SS"
+    "苹果": "AAPL", "微软": "MSFT", "英伟达": "NVDA", "招行": "600036.SS", "伊利": "600887.SS",
+    "新易盛": "300502.SZ", "卧龙": "600580.SS", "卧龙电驱": "600580.SS"
 })
 
 MARKET_GROUPS = {
@@ -68,10 +72,10 @@ MARKET_GROUPS = {
     "🇨🇳 A股核心 (Core)": [
         "600519.SS", "000858.SZ", "600900.SS", "300750.SZ", "600036.SS", 
         "601318.SS", "600188.SS", "601088.SS", "600887.SS", "600585.SS", 
-        "002714.SZ", "600030.SS", "002594.SZ", "300760.SZ"
+        "002714.SZ", "600030.SS", "002594.SZ", "300760.SZ", "300502.SZ", "600580.SS"
     ]
 }
-# 辅助函数保持不变
+# 辅助函数
 def smart_parse_symbol(user_input):
     clean = user_input.strip()
     if clean in NAME_TO_TICKER: return NAME_TO_TICKER[clean]
@@ -113,80 +117,74 @@ def get_stock_basic_info(symbol):
 
 
 # ==========================================
-# 2. Tushare 专有数据拉取函数 (新增)
+# 2. Tushare 专有数据拉取函数 (增强容错)
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_tushare_data(ts_code):
-    """
-    通过 Tushare 获取 A股/港股核心财务数据。
-    ts_code 格式：'600519.SH' 或 '00700.HK'
-    返回: info, biz, df_hist
-    """
     global pro
     if pro is None:
         raise ConnectionError("Tushare Pro API 未成功初始化。")
 
-    # Tushare 交易日历：获取最新的一个交易日，确保数据是近期的
-    end_date = pd.to_datetime('today').strftime('%Y%m%d')
     start_date = (pd.to_datetime('today') - pd.DateOffset(years=5)).strftime('%Y%m%d')
+    end_date = pd.to_datetime('today').strftime('%Y%m%d')
     
-    # 1. 估值和基本信息 (获取最新 ROE 和市值)
-    df_basic = pro.query('daily_basic', ts_code=ts_code, end_date=end_date, fields='trade_date,total_share,circ_share,total_mv,pe_ttm,roe')
+    # 尝试拉取所有需要的表
+    df_basic, df_inc, df_cf, df_bal = pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    # 2. 利润表 (用于营收和净利润数据)
-    df_inc = pro.query('income', ts_code=ts_code, start_date=start_date, end_date=end_date, fields='end_date,revenue,n_income,dt_ann')
-    
-    # 3. 现金流量表 (用于 OCF)
-    df_cf = pro.query('cashflow', ts_code=ts_code, start_date=start_date, end_date=end_date, fields='end_date,n_cashflow_act')
-    
-    # 4. 资产负债表 (用于应收账款)
-    df_bal = pro.query('balancesheet', ts_code=ts_code, start_date=start_date, end_date=end_date, fields='end_date,total_receiv')
+    try:
+        df_basic = pro.query('daily_basic', ts_code=ts_code, end_date=end_date, fields='trade_date,total_share,circ_share,total_mv,pe_ttm,roe')
+        df_inc = pro.query('income', ts_code=ts_code, start_date=start_date, end_date=end_date, fields='end_date,revenue,n_income,dt_ann,comp_type')
+        df_cf = pro.query('cashflow', ts_code=ts_code, start_date=start_date, end_date=end_date, fields='end_date,n_cashflow_act')
+        df_bal = pro.query('balancesheet', ts_code=ts_code, start_date=start_date, end_date=end_date, fields='end_date,total_receiv')
+    except Exception as e:
+        st.warning(f"Tushare 查询失败，可能是权限或数据不存在：{e}")
+        return None, None, None, None # 返回 None，强制降级到 yfinance
 
-    if df_basic.empty or df_inc.empty:
-        raise ValueError("Tushare未返回足够的基本面或利润数据。")
+    if df_basic.empty and df_inc.empty:
+        raise ValueError("Tushare未返回任何核心财务数据。")
         
     # --- 数据清洗与格式化 ---
     
+    latest_basic = df_basic.iloc[0] if not df_basic.empty else {}
+    latest_inc = df_inc.iloc[0] if not df_inc.empty else {}
+    
     # 1. 商业模式 (Biz)
-    latest_basic = df_basic.iloc[0]
-    
-    # Tushare没有直接的毛利率和净利率，需要用利润表计算
-    latest_inc = df_inc.iloc[0]
-    gross_profit = latest_inc.get('revenue', 0) - latest_inc.get('cost_oper', 0) if 'cost_oper' in latest_inc.index else 0 # Tushare默认字段可能需要查询
-    
     biz = {
-        "ROE": latest_basic.get('roe', 0) / 100, # Tushare的ROE通常是百分比值
+        "ROE": latest_basic.get('roe', 0) / 100 if latest_basic.get('roe') else 0,
         "毛利率": 0, # Tushare缺乏直接的毛利/成本数据，设为0或通过复杂的中间表计算
         "净利率": latest_inc.get('n_income', 0) / latest_inc.get('revenue', 1) if latest_inc.get('revenue') else 0
     }
     
     # 2. 历史趋势 (df_hist)
-    # 合并INC, CF, BAL表，并按报告期（end_date）对齐
-    df_hist_merged = pd.merge(df_inc, df_cf, on='end_date', how='inner')
+    df_hist_merged = pd.merge(df_inc, df_cf, on='end_date', how='inner', suffixes=('_inc', '_cf'))
     df_hist_merged = pd.merge(df_hist_merged, df_bal, on='end_date', how='inner')
     
-    # 转换为 yfinance 兼容格式
-    df_hist = df_hist_merged.rename(columns={
-        'end_date': '年份',
-        'revenue': '营收',
-        'n_income': '净利润',
-        'n_cashflow_act': '现金流',
-        'total_receiv': '应收'
-    })
-    
-    df_hist['年份'] = df_hist['年份'].apply(lambda x: pd.to_datetime(x).strftime('%Y'))
-    df_hist = df_hist.sort_values(by='年份').drop_duplicates(subset=['年份'], keep='last').tail(5)
-    
-    # 计算衍生指标
-    df_hist['应收占比%'] = (df_hist['应收'] / df_hist['营收']) * 100
-    df_hist['净现比'] = (df_hist['现金流'] / df_hist['净利润']).clip(upper=5) # 限制异常值
-    
+    if df_hist_merged.empty:
+        df_hist = pd.DataFrame() # 没有足够的数据，返回空DataFrame
+    else:
+        df_hist = df_hist_merged.rename(columns={
+            'end_date': '年份',
+            'revenue': '营收',
+            'n_income': '净利润',
+            'n_cashflow_act': '现金流',
+            'total_receiv': '应收'
+        })
+        
+        # 处理 Tushare 年报/季报重复问题 (只保留年报或最新年报)
+        df_hist['年份'] = df_hist['年份'].apply(lambda x: pd.to_datetime(x).strftime('%Y'))
+        # 确保只取每年最新的一个报告期（通常是年报）
+        df_hist = df_hist.sort_values(by='end_date', ascending=False).drop_duplicates(subset=['年份'], keep='first').sort_values(by='年份').tail(5)
+        
+        # 计算衍生指标
+        df_hist['应收占比%'] = (df_hist['应收'] / df_hist['营收']) * 100
+        df_hist['净现比'] = (df_hist['现金流'] / df_hist['净利润']).clip(upper=5)
+        df_hist = df_hist[['年份', '营收', '应收', '净利润', '现金流', '应收占比%', '净现比']]
+        
     # 3. 构造 info 字典
-    # 简单构造显示名称，Tushare拉不到 shortName
-    display_name = STOCK_MAP.get(ts_code.replace('.SH', '.SS').replace('.SZ', '.SZ').replace('.HK', '.HK'), ts_code)
+    display_name = STOCK_MAP.get(symbol, ts_code)
     
     info = {
-        'regularMarketPrice': None, # Tushare实时价格需要另一个接口
+        'regularMarketPrice': None, 
         'shortName': display_name
     }
 
@@ -202,27 +200,33 @@ def fetch_main_stock_data(symbol):
     主数据拉取函数: Tushare优先 (A/H股)，否则使用 yfinance。
     """
     is_domestic = symbol.endswith(('.SS', '.SZ', '.HK'))
-
+    
+    tushare_success = False
+    
     if is_domestic and pro is not None:
-        # 尝试使用 Tushare
         ts_code = symbol.replace('.SS', '.SH').replace('.SZ', '.SZ').replace('.HK', '.HK') # 转换为 Tushare 代码格式
         try:
             info, biz, df_hist, display_name = fetch_tushare_data(ts_code)
-            st.warning(f"✅ 【{display_name}】数据由 Tushare 提供 (仅财报)")
-            
-            # Tushare 缺乏价格信息，回退到 yfinance 补充价格
-            try:
-                yf_info = yf.Ticker(symbol).info
-                info['regularMarketPrice'] = yf_info.get('regularMarketPrice')
-            except: pass
-            
-            return info, biz, df_hist, display_name
+            if info is not None:
+                st.info(f"✅ 【{display_name}】数据由 Tushare (财报) + yfinance (价格) 提供")
+                tushare_success = True
+                
+                # Tushare 缺乏价格信息，回退到 yfinance 补充价格
+                try:
+                    yf_info = yf.Ticker(symbol).info
+                    info['regularMarketPrice'] = yf_info.get('regularMarketPrice')
+                except: 
+                    st.caption("yfinance价格获取失败。")
+                    pass
+                
+                return info, biz, df_hist, display_name
 
         except Exception as e:
-            st.warning(f"Tushare数据拉取失败 ({e.__class__.__name__})，回退到 yfinance...")
+            # Tushare 拉取失败，进入 yfinance 降级
+            pass
 
 
-    # Tushare 失败 或 非国内股票，回退到 yfinance (v17.1 容错逻辑)
+    # 降级到 yfinance (无论是 Tushare 失败还是非国内股票)
     info = {}; biz = {}; df_hist = pd.DataFrame()
     try:
         stock = yf.Ticker(symbol)
@@ -324,7 +328,7 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
 # 5. 主界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("🌎 超级终端 v20.0")
+    st.header("🌎 超级终端 v20.1")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     st.divider()
 
@@ -370,8 +374,8 @@ if mode == "A. 全球猎手 (批量)":
 else:
     # --- Mode B: 核心透视 (全球查询) ---
     with st.sidebar:
-        st.info("💡 输入全球代码 (如 DAX.DE, NVDA, 600519)")
-        raw_input = st.text_input("分析对象:", "600519.SS").strip() # 默认值改为茅台，方便测试 Tushare
+        st.info("💡 输入全球代码 (如 DAX.DE, NVDA, 300502)")
+        raw_input = st.text_input("分析对象:", "300502.SZ").strip() # 默认值改为新易盛，方便测试 Tushare 容错
         symbol = smart_parse_symbol(raw_input)
     
     st.title(f"🌎 核心透视: {symbol}")
