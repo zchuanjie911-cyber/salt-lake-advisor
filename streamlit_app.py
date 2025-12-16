@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 # ==========================================
 # 0. 页面配置与初始化
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v14.0 (极限稳定版)", page_icon="🏎️", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v14.1 (容错加强版)", page_icon="🛡️", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # 初始化会话状态 (用于存储高延迟的同行数据)
@@ -89,7 +89,7 @@ def get_peer_group_and_name(symbol):
 
 @st.cache_data(ttl=3600)
 def fetch_main_stock_data(symbol):
-    """只获取主角的财务和商业模式数据 (快速)"""
+    """只获取主角的财务和商业模式数据 (快速) - 增强容错"""
     try:
         stock = yf.Ticker(symbol)
         info = stock.info
@@ -97,36 +97,38 @@ def fetch_main_stock_data(symbol):
         bal = stock.balance_sheet
         cf = stock.cashflow
         
-        # 商业模式
+        # 商业模式 (ROE/毛利率等，缺失则为0)
         biz = {
-            "ROE": info.get('returnOnEquity', 0),
-            "毛利率": info.get('grossMargins', 0),
-            "净利率": info.get('profitMargins', 0)
+            "ROE": info.get('returnOnEquity', 0) or 0,
+            "毛利率": info.get('grossMargins', 0) or 0,
+            "净利率": info.get('profitMargins', 0) or 0
         }
         
+        # 核心数据检查
+        if not info or info.get('regularMarketPrice') is None:
+             return None, None, None # 无法获取核心信息
+
         # 历史趋势
         history = []
-        if not inc.empty:
+        if not inc.empty and len(inc.columns) >= 2: # 至少有2年数据
             years = inc.columns[:5]
             for d in years:
-                rev = inc.loc['Total Revenue', d] if 'Total Revenue' in inc.index else 1
-                rec = bal.loc['Receivables', d] if 'Receivables' in bal.index else 0
-                ni = inc.loc['Net Income', d] if 'Net Income' in inc.index else 1
-                ocf = cf.loc['Operating Cash Flow', d] if 'Operating Cash Flow' in cf.index else 0
+                # 强化容错：所有分母都设默认值
+                rev = inc.loc['Total Revenue', d] if 'Total Revenue' in inc.index and inc.loc['Total Revenue', d] else 1.0
+                rec = bal.loc['Receivables', d] if 'Receivables' in bal.index and bal.loc['Receivables', d] is not None else 0
+                ni = inc.loc['Net Income', d] if 'Net Income' in inc.index and inc.loc['Net Income', d] else 1.0
+                ocf = cf.loc['Operating Cash Flow', d] if 'Operating Cash Flow' in cf.index and cf.loc['Operating Cash Flow', d] is not None else 0
                 
                 history.append({
                     "年份": d.strftime("%Y"), "营收": rev, "应收": rec, "净利润": ni, "现金流": ocf,
-                    "应收占比%": (rec / rev) * 100 if rev > 0 else 0,
-                    "净现比": (ocf / ni) if ni > 0 else 0
+                    "应收占比%": (rec / rev) * 100 if rev > 1 else 0, # rev>1防止除以0或极小值
+                    "净现比": (ocf / ni) if abs(ni) > 1 else 0 # abs(ni)>1防止除以0或极小值
                 })
         
-        # 错误隔离：如果关键数据缺失，也视为失败
-        if not info or biz['ROE'] is None:
-             raise ValueError("Essential financial data missing.")
-
         return info, biz, pd.DataFrame(history).iloc[::-1]
     except Exception as e: 
-        # 返回 None 表示获取失败
+        # 打印错误到日志，但前端只显示通用信息
+        print(f"Error fetching data for {symbol}: {e}")
         return None, None, None
 
 def load_peers_data(group_name, target_group):
@@ -186,7 +188,7 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
 # 3. 核心界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("⚡ 超级终端 v14.0")
+    st.header("⚡ 超级终端 v14.1")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     st.divider()
 
@@ -287,7 +289,7 @@ else:
                     last_r = df_hist['净现比'].iloc[-1]
                     if last_r < 0.8: st.error(f"🚨 净现比 {last_r:.2f}，利润质量低！")
                     else: st.success(f"💎 净现比 {last_r:.2f}，真金白银。")
-            else: st.warning("暂无历史数据或数据获取失败。")
+            else: st.warning("⚠️ 暂无历史财务数据，请确认股票已上市并有公开年报。")
 
 
             # 2. 行业地位 (异步加载/缓存)
@@ -306,4 +308,4 @@ else:
                 if st.button(f'🏎️ 立即加载【{group_name}】同行数据'):
                     load_peers_data(group_name, target_group)
         
-        else: st.error("无法获取核心数据。请检查代码是否正确或该股票数据源缺失。")
+        else: st.error(f"❌ 核心数据获取失败。请检查股票代码 `{symbol}` 是否正确，或数据源暂不可用。")
