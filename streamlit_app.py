@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 # ==========================================
 # 0. 页面配置与初始化
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v17.0 (全球查询)", page_icon="🌎", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v17.2 (中文名称版)", page_icon="🌎", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # 初始化会话状态
@@ -19,7 +19,7 @@ if 'current_peer_group' not in st.session_state:
     st.session_state.current_peer_group = None
 
 # ==========================================
-# 1. 数据字典与智能识别 (保留核心中文支持)
+# 1. 数据字典与智能识别 
 # ==========================================
 STOCK_MAP = {
     # 保持核心白名单，用于智能识别和同行分组
@@ -82,12 +82,16 @@ def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10)
 # 2. 数据获取 (核心改动在这里)
 # ==========================================
 def get_stock_basic_info(symbol):
-    # 此函数保持不变，用于同行并发查询
+    """
+    更新：同行信息获取函数。
+    - 优先使用 STOCK_MAP 中的中文名。
+    - 否则使用 yfinance 返回的 shortName。
+    """
     try:
         t = yf.Ticker(symbol)
         i = t.info
-        # 尝试从 info['shortName'] 获取名称，否则使用代码
-        name = i.get('shortName', symbol)
+        # 核心修改：使用STOCK_MAP中的中文名，如果不在，则使用 shortName
+        name = STOCK_MAP.get(symbol, i.get('shortName', symbol)) 
         return {
             "名称": name,
             "市值(B)": (i.get('marketCap', 0) or 0)/1e9,
@@ -101,34 +105,33 @@ def get_peer_group_and_name(symbol):
     for group_name, tickers in MARKET_GROUPS.items():
         if symbol in tickers: 
             return group_name, tickers
-    # 如果找不到，返回 None，表示没有预设同行组
     return None, None
 
 @st.cache_data(ttl=3600)
 def fetch_main_stock_data(symbol):
-    """只获取主角的财务和商业模式数据 (快速) - 增强容错"""
+    """只获取主角的财务和商业模式数据 (快速) - 终极容错"""
+    info = {}
+    biz = {}
+    df_hist = pd.DataFrame()
+    
     try:
         stock = yf.Ticker(symbol)
-        info = stock.info
-        inc = stock.income_stmt
-        bal = stock.balance_sheet
-        cf = stock.cashflow
+        info = stock.info if stock.info else {}
+        inc = stock.income_stmt if stock.income_stmt is not None else pd.DataFrame()
+        bal = stock.balance_sheet if stock.balance_sheet is not None else pd.DataFrame()
+        cf = stock.cashflow if stock.cashflow is not None else pd.DataFrame()
         
-        # 商业模式 (ROE/毛利率等，缺失则为0)
+        if not info or info.get('regularMarketPrice') is None:
+             raise ValueError("No basic price information available.")
+
         biz = {
             "ROE": info.get('returnOnEquity', 0) or 0,
             "毛利率": info.get('grossMargins', 0) or 0,
             "净利率": info.get('profitMargins', 0) or 0
         }
         
-        # 核心数据检查 (使用 shortName 或 longName 作为展示名称)
-        display_name = info.get('shortName', info.get('longName', symbol))
-        if not info or info.get('regularMarketPrice') is None:
-             raise ValueError("Essential financial data missing.")
-
-        # 历史趋势
         history = []
-        if not inc.empty and len(inc.columns) >= 2:
+        if not inc.empty and len(inc.columns) >= 1:
             years = inc.columns[:5]
             for d in years:
                 rev = inc.loc['Total Revenue', d] if 'Total Revenue' in inc.index and inc.loc['Total Revenue', d] else 1.0
@@ -141,11 +144,14 @@ def fetch_main_stock_data(symbol):
                     "应收占比%": (rec / rev) * 100 if rev > 1 else 0, 
                     "净现比": (ocf / ni) if abs(ni) > 1 else 0 
                 })
+            df_hist = pd.DataFrame(history).iloc[::-1]
+
+        display_name = info.get('shortName', info.get('longName', symbol))
         
-        return info, biz, pd.DataFrame(history).iloc[::-1], display_name
+        return info, biz, df_hist, display_name
     except Exception as e: 
         print(f"Error fetching data for {symbol}: {e}")
-        return None, None, None, symbol # 失败时返回原始代码作为名称
+        return None, None, None, symbol
 
 def load_peers_data(group_name, target_group):
     """加载同行数据，并存入缓存"""
@@ -165,11 +171,10 @@ def load_peers_data(group_name, target_group):
 
 @st.cache_data(ttl=3600)
 def fetch_hunter_data_concurrent(tickers, discount_rate):
-    """猎手模式并发获取 (仅限白名单，确保数据质量)"""
+    """猎手模式并发获取"""
     ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "TSM": 32.5}
     def fetch_one(raw_sym):
         symbol = smart_parse_symbol(raw_sym)
-        # 仅处理白名单内的股票，否则跳过
         if symbol not in STOCK_MAP and not symbol.endswith(('.SS', '.SZ', '.HK')):
             return None
             
@@ -208,7 +213,7 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
 # 3. 核心界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("🌎 超级终端 v17.0")
+    st.header("🌎 超级终端 v17.2")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     st.divider()
 
@@ -287,7 +292,7 @@ else:
 
             # 3. 财务体检 (即时加载)
             st.header("3. 🔎 深度财务审计")
-            if df_hist is not None and not df_hist.empty:
+            if not df_hist.empty:
                 f1, f2 = st.columns(2)
                 with f1:
                     fig_rev = make_subplots(specs=[[{"secondary_y": True}]])
@@ -310,7 +315,7 @@ else:
                     last_r = df_hist['净现比'].iloc[-1]
                     if last_r < 0.8: st.error(f"🚨 净现比 {last_r:.2f}，利润质量低！")
                     else: st.success(f"💎 净现比 {last_r:.2f}，真金白银。")
-            else: st.warning("⚠️ 暂无历史财务数据，请确认股票已上市并有公开年报。")
+            else: st.warning("⚠️ 暂无历史财务数据。")
 
 
             # 2. 行业地位 (异步加载/缓存或跳过)
@@ -332,4 +337,4 @@ else:
                  st.header("2. 🏔️ 行业地位")
                  st.info("该股票不在预设的同行分析组中，无法进行行业地位对比分析。")
 
-        else: st.error(f"❌ 核心数据获取失败。请检查股票代码 `{symbol}` 是否正确，或数据源暂不可用。")
+        else: st.error(f"❌ 核心数据获取失败。请检查股票代码 `{symbol}` 是否正确。")
