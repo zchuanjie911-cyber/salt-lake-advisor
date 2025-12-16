@@ -3,11 +3,13 @@ import pandas as pd
 import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from concurrent.futures import ThreadPoolExecutor
 
 # ==========================================
 # 0. 页面配置
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v11.0", page_icon="🦁", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v12.1 (分阶段加载)", page_icon="⚡", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # ==========================================
@@ -55,16 +57,79 @@ def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10)
     return sum(future_flows) + discounted_terminal
 
 # ==========================================
-# 2. 模式A专用：猎手批量获取
+# 2. 极速数据获取 (分离主角与配角)
 # ==========================================
+def get_stock_basic_info(symbol):
+    try:
+        t = yf.Ticker(symbol)
+        i = t.info
+        return {
+            "名称": STOCK_MAP.get(symbol, symbol),
+            "市值(B)": (i.get('marketCap', 0) or 0)/1e9,
+            "毛利率%": (i.get('grossMargins', 0) or 0)*100,
+            "营收增长%": (i.get('revenueGrowth', 0) or 0)*100
+        }
+    except: return None
+
 @st.cache_data(ttl=3600)
-def fetch_hunter_data(tickers, discount_rate):
-    snapshot = []
-    ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "TSM": 32.5}
-    progress = st.progress(0)
+def fetch_main_stock_data(symbol):
+    """只获取主角的财务和商业模式数据 (快速)"""
+    try:
+        stock = yf.Ticker(symbol)
+        info = stock.info
+        inc = stock.income_stmt
+        bal = stock.balance_sheet
+        cf = stock.cashflow
+        
+        biz = {
+            "ROE": info.get('returnOnEquity', 0),
+            "毛利率": info.get('grossMargins', 0),
+            "净利率": info.get('profitMargins', 0)
+        }
+        
+        history = []
+        if not inc.empty:
+            years = inc.columns[:5]
+            for d in years:
+                rev = inc.loc['Total Revenue', d] if 'Total Revenue' in inc.index else 1
+                rec = bal.loc['Receivables', d] if 'Receivables' in bal.index else 0
+                ni = inc.loc['Net Income', d] if 'Net Income' in inc.index else 1
+                ocf = cf.loc['Operating Cash Flow', d] if 'Operating Cash Flow' in cf.index else 0
+                
+                history.append({
+                    "年份": d.strftime("%Y"),
+                    "营收": rev,
+                    "应收": rec,
+                    "净利润": ni,
+                    "现金流": ocf,
+                    "应收占比%": (rec / rev) * 100 if rev > 0 else 0,
+                    "净现比": (ocf / ni) if ni > 0 else 0
+                })
+        
+        return info, biz, pd.DataFrame(history).iloc[::-1]
+    except: return None, None, pd.DataFrame()
+
+@st.cache_data(ttl=3600)
+def fetch_peers_data_concurrent(symbol):
+    """单独获取同行数据 (使用多线程)"""
+    target_group = MARKET_GROUPS["🇺🇸 美股科技 (AI & Chips)"]
+    for k, v in MARKET_GROUPS.items():
+        if symbol in v: target_group = v; break
+    safe_group = target_group[:10]
     
-    for i, raw_sym in enumerate(tickers):
-        progress.progress((i + 1) / len(tickers))
+    peers_data = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = executor.map(get_stock_basic_info, safe_group)
+    for res in results:
+        if res: peers_data.append(res)
+        
+    return pd.DataFrame(peers_data)
+
+@st.cache_data(ttl=3600)
+def fetch_hunter_data_concurrent(tickers, discount_rate):
+    """猎手模式并发获取 (保持不变)"""
+    ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "TSM": 32.5}
+    def fetch_one(raw_sym):
         symbol = smart_parse_symbol(raw_sym)
         try:
             stock = yf.Ticker(symbol)
@@ -73,117 +138,59 @@ def fetch_hunter_data(tickers, discount_rate):
             mkt_cap = info.get('marketCap', 0)
             price = info.get('currentPrice', info.get('regularMarketPrice', 0))
             roe = info.get('returnOnEquity', 0) or 0
-            
             fcf = info.get('freeCashflow', 0)
             if fcf is None:
                 op = info.get('operatingCashflow', 0) or 0
                 cap = info.get('capitalExpenditures', 0) or 0
                 fcf = op + cap if cap < 0 else op - cap
-            
             fix_rate = ADR_FIX.get(symbol, 1.0)
             fcf_usd = fcf / fix_rate
             growth = min(max(info.get('earningsGrowth', 0.05) or 0.05, 0.02), 0.25)
             intrinsic = calculate_dcf(fcf_usd, growth, discount_rate/100)
             upside = (intrinsic - mkt_cap) / mkt_cap if mkt_cap > 0 else 0
-            
-            item = {}
-            item["代码"] = symbol
-            item["名称"] = cn_name
-            item["现价"] = price
-            item["潜在涨幅%"] = round(upside*100, 2)
-            item["DCF估值"] = round(price*(1+upside), 2)
-            item["ROE%"] = round(roe*100, 2)
-            item["FCF收益率%"] = round((fcf_usd/mkt_cap)*100, 2) if mkt_cap > 0 else 0
-            item["市值(B)"] = round(mkt_cap/1e9, 2)
-            snapshot.append(item)
-        except: continue
-        
-    progress.empty()
+            return {
+                "代码": symbol, "名称": cn_name, "现价": price, 
+                "潜在涨幅%": round(upside*100, 2), "DCF估值": round(price*(1+upside), 2),
+                "ROE%": round(roe*100, 2), "FCF收益率%": round((fcf_usd/mkt_cap)*100, 2) if mkt_cap > 0 else 0,
+                "市值(B)": round(mkt_cap/1e9, 2)
+            }
+        except: return None
+
+    snapshot = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        results = executor.map(fetch_one, tickers)
+    for res in results:
+        if res: snapshot.append(res)
     return pd.DataFrame(snapshot)
 
 # ==========================================
-# 3. 模式B专用：深度透视获取
-# ==========================================
-@st.cache_data(ttl=3600)
-def fetch_deep_data(symbol):
-    try:
-        stock = yf.Ticker(symbol)
-        info = stock.info
-        inc = stock.income_stmt
-        bal = stock.balance_sheet
-        cf = stock.cashflow
-        
-        # 商业模式
-        biz = {
-            "ROE": info.get('returnOnEquity', 0),
-            "毛利率": info.get('grossMargins', 0),
-            "净利率": info.get('profitMargins', 0)
-        }
-        
-        # 历史趋势 (最近5年)
-        history = []
-        if not inc.empty:
-            years = inc.columns[:5]
-            for d in years:
-                item = {}
-                item["年份"] = d.strftime("%Y")
-                item["营收"] = inc.loc['Total Revenue', d] if 'Total Revenue' in inc.index else 0
-                item["应收"] = bal.loc['Receivables', d] if 'Receivables' in bal.index else 0
-                item["净利润"] = inc.loc['Net Income', d] if 'Net Income' in inc.index else 0
-                item["现金流"] = cf.loc['Operating Cash Flow', d] if 'Operating Cash Flow' in cf.index else 0
-                history.append(item)
-                
-        # 同行对比 (简单查找)
-        peers_data = []
-        target_group = MARKET_GROUPS["🇺🇸 美股科技 (AI & Chips)"] # 默认
-        for k, v in MARKET_GROUPS.items():
-            if symbol in v: target_group = v; break
-        
-        for p in target_group:
-            try:
-                pi = yf.Ticker(p).info
-                peers_data.append({
-                    "名称": STOCK_MAP.get(p, p),
-                    "市值(B)": (pi.get('marketCap', 0) or 0)/1e9,
-                    "毛利率%": (pi.get('grossMargins', 0) or 0)*100,
-                    "营收增长%": (pi.get('revenueGrowth', 0) or 0)*100
-                })
-            except: continue
-            
-        return info, biz, pd.DataFrame(history).iloc[::-1], pd.DataFrame(peers_data)
-    except: return None, None, pd.DataFrame(), pd.DataFrame()
-
-# ==========================================
-# 4. 主逻辑与侧边栏
+# 3. 核心界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("🦁 超级终端 v11.0")
-    mode = st.radio("📡 选择模式", ["A. 全球猎手 (筛选与估值)", "B. 核心透视 (商业与体检)"])
+    st.header("⚡ 超级终端 v12.1")
+    mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     st.divider()
 
-# -----------------
-# 模式 A: 全球猎手
-# -----------------
-if mode == "A. 全球猎手 (筛选与估值)":
+if mode == "A. 全球猎手 (批量)":
+    # --- Mode A ---
     with st.sidebar:
         options = list(MARKET_GROUPS.keys()) + ["🔍 自选输入"]
         choice = st.selectbox("选择战场", options)
         if choice == "🔍 自选输入":
-            st.info("💡 支持中文: `苹果, 茅台`")
             user_txt = st.text_area("输入 (逗号隔开)", "NVDA, TSLA, 600519")
             tickers = [x.strip() for x in user_txt.split(',') if x.strip()]
-        else:
-            tickers = MARKET_GROUPS[choice]
+        else: tickers = MARKET_GROUPS[choice]
         dr = st.slider("折现率 (%)", 6, 15, 9)
     
     st.title("🌍 全球价值猎手")
     if tickers:
-        df_val = fetch_hunter_data(tickers, dr)
-        if not df_val.empty:
-            df_val = df_val.sort_values("潜在涨幅%", ascending=False)
+        with st.spinner('⚡ 多线程扫描中...'):
+            df_val = fetch_hunter_data_concurrent(tickers, dr)
             
-            # 图表区
-            st.subheader("1. 估值概览 (Price vs Value)")
+        if not df_val.empty:
+            df_val = df_val.sort_values("潜在涨幅%", ascending=False).reset_index(drop=True)
+            st.subheader("1. 估值概览 (优秀者置顶)")
+            
             fig_dumb = go.Figure()
             fig_dumb.add_trace(go.Scatter(x=df_val["现价"], y=df_val["名称"], mode='markers', name='现价', marker=dict(color='red', size=12)))
             fig_dumb.add_trace(go.Scatter(x=df_val["DCF估值"], y=df_val["名称"], mode='markers', name='估值', marker=dict(color='green', size=12, symbol='diamond')))
@@ -191,88 +198,90 @@ if mode == "A. 全球猎手 (筛选与估值)":
                 r = df_val.iloc[i]
                 c = 'green' if r['DCF估值'] > r['现价'] else 'red'
                 fig_dumb.add_shape(type="line", x0=r['现价'], y0=r['名称'], x1=r['DCF估值'], y1=r['名称'], line=dict(color=c, width=3))
-            fig_dumb.update_layout(height=400, xaxis_title="价格", yaxis=dict(autorange="reversed"))
+            
+            fig_dumb.update_layout(height=max(400, len(df_val)*30), xaxis_title="价格", yaxis=dict(autorange="reversed", type='category', categoryorder='array', categoryarray=df_val['名称']), title="🏆 哑铃榜：最上面的绿线越长，机会越大")
             st.plotly_chart(fig_dumb, use_container_width=True)
 
             c1, c2 = st.columns(2)
-            with c1:
-                st.subheader("2. 潜能排行榜")
-                fig_up = px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", color_continuous_scale="RdYlGn", text="潜在涨幅%")
-                fig_up.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-                st.plotly_chart(fig_up, use_container_width=True)
-            with c2:
-                st.subheader("3. 黄金象限 (质优价廉)")
-                fig_sc = px.scatter(df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%", 
-                                    text="名称", labels={"FCF收益率%": "便宜度", "ROE%": "赚钱力"}, color_continuous_scale="RdYlGn")
-                fig_sc.add_hline(y=15, line_dash="dot"); fig_sc.add_vline(x=4, line_dash="dot")
-                st.plotly_chart(fig_sc, use_container_width=True)
+            with c1: st.plotly_chart(px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", color_continuous_scale="RdYlGn", title="2. 潜能排行榜"), use_container_width=True)
+            with c2: st.plotly_chart(px.scatter(df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%", text="名称", title="3. 黄金象限", color_continuous_scale="RdYlGn"), use_container_width=True)
             
-            st.dataframe(df_val.set_index("名称").style.background_gradient(subset=["潜在涨幅%"], cmap="RdYlGn", vmin=-50, vmax=50), use_container_width=True)
+            st.dataframe(df_val.style.background_gradient(subset=["潜在涨幅%"], cmap="RdYlGn", vmin=-50, vmax=50), use_container_width=True)
         else: st.warning("未找到数据")
 
-# -----------------
-# 模式 B: 核心透视
-# -----------------
 else:
+    # --- Mode B (核心透视) - 阶段加载核心 ---
     with st.sidebar:
-        st.info("💡 深入分析单只股票")
         raw_input = st.text_input("分析对象:", "NVDA").strip()
         symbol = smart_parse_symbol(raw_input)
     
     st.title(f"📊 核心透视: {symbol}")
     if symbol:
-        info, biz, df_hist, df_peers = fetch_deep_data(symbol)
+        # **阶段1：快速加载主角数据**
+        info, biz, df_hist = fetch_main_stock_data(symbol) 
         
         if info:
             cn_name = STOCK_MAP.get(symbol, info.get('shortName', symbol))
-            st.caption(f"正在分析: {cn_name}")
+            st.caption(f"分析对象: {cn_name}")
 
-            # 1. 商业模式
-            st.markdown("---")
-            st.header("1. 🏢 商业模式仪表盘")
+            # 1. 商业模式 (即时加载)
+            st.header("1. 🏢 商业模式")
             c1, c2, c3 = st.columns(3)
             with c1:
                 val = biz['ROE'] * 100
-                fig = go.Figure(go.Indicator(mode="gauge+number", value=val, title={'text': "ROE (赚钱效率)"}, 
-                    gauge={'axis': {'range': [0, 40]}, 'bar': {'color': "#00c853" if val>15 else "#ff4b4b"}, 'steps': [{'range': [0, 15], 'color': "#f0f0f0"}]}))
-                fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=10))
+                fig = go.Figure(go.Indicator(mode="gauge+number", value=val, title={'text': "ROE"}, gauge={'axis': {'range': [0, 40]}, 'bar': {'color': "#00c853" if val>15 else "#ff4b4b"}}))
+                fig.update_layout(height=250, margin=dict(t=30,b=10))
                 st.plotly_chart(fig, use_container_width=True)
             with c2:
                 val = biz['毛利率'] * 100
-                fig = go.Figure(go.Indicator(mode="gauge+number", value=val, title={'text': "毛利率 (护城河)"}, 
-                    gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#2962ff" if val>40 else "#ff9800"}, 'steps': [{'range': [0, 40], 'color': "#f0f0f0"}]}))
-                fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=10))
+                fig = go.Figure(go.Indicator(mode="gauge+number", value=val, title={'text': "毛利率"}, gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#2962ff" if val>40 else "#ff9800"}}))
+                fig.update_layout(height=250, margin=dict(t=30,b=10))
                 st.plotly_chart(fig, use_container_width=True)
             with c3:
                 st.metric("净利率", f"{biz['净利率']*100:.2f}%")
-                st.info("标准：ROE>15% (优) | 毛利>40% (强)")
+                st.info("ROE>15% (优) | 毛利>40% (强)")
 
-            # 2. 行业地位
-            st.markdown("---")
-            st.header("2. 🏔️ 行业地位气泡图")
-            if not df_peers.empty:
-                fig_pos = px.scatter(df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称", text="名称", 
-                                     title="右上角=最强+最快", labels={"毛利率%": "竞争力", "营收增长%": "成长性"}, height=450)
-                fig_pos.update_traces(textposition='top center')
-                st.plotly_chart(fig_pos, use_container_width=True)
-            else: st.warning("暂无同行数据")
-
-            # 3. 财务体检
-            st.markdown("---")
-            st.header("3. 🔎 财务质量体检")
+            # 3. 财务体检 (即时加载)
+            st.header("3. 🔎 深度财务审计")
             if not df_hist.empty:
                 f1, f2 = st.columns(2)
                 with f1:
-                    fig_rev = go.Figure()
-                    fig_rev.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['营收'], name='营收', marker_color='lightblue'))
-                    fig_rev.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['应收'], name='应收', marker_color='orange'))
-                    fig_rev.update_layout(title="营收含金量 (橙柱越低越好)", barmode='group')
+                    fig_rev = make_subplots(specs=[[{"secondary_y": True}]])
+                    fig_rev.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['营收'], name="营收", marker_color='lightblue'), secondary_y=False)
+                    fig_rev.add_trace(go.Scatter(x=df_hist['年份'], y=df_hist['应收占比%'], name="应收占比%", mode='lines+markers', line=dict(color='red', width=3)), secondary_y=True)
+                    fig_rev.update_layout(title="⚠️ 营收虚胖检测 (红线向上=危险)")
                     st.plotly_chart(fig_rev, use_container_width=True)
+                    last_ratio = df_hist['应收占比%'].iloc[-1]
+                    if last_ratio > 30: st.error(f"🚨 应收占比 {last_ratio:.1f}%，虚胖！")
+                    else: st.success(f"✅ 应收占比 {last_ratio:.1f}%，健康。")
+
                 with f2:
-                    fig_cash = go.Figure()
-                    fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['净利润'], name='净利润', marker_color='#a5d6a7'))
-                    fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['现金流'], name='现金流', marker_color='#2e7d32'))
-                    fig_cash.update_layout(title="利润含金量 (深绿覆盖浅绿为优)", barmode='overlay')
+                    fig_cash = make_subplots(specs=[[{"secondary_y": True}]])
+                    fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['净利润'], name="净利润", marker_color='#a5d6a7'), secondary_y=False)
+                    fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['现金流'], name="现金流", marker_color='#2e7d32'), secondary_y=False)
+                    fig_cash.add_trace(go.Scatter(x=df_hist['年份'], y=df_hist['净现比'], name="净现比", mode='lines+markers', line=dict(color='gold', width=3, dash='dot')), secondary_y=True)
+                    fig_cash.update_layout(title="💰 利润真实性 (黄线>1=优)")
+                    fig_cash.add_hline(y=1.0, line_dash="dash", line_color="gray", secondary_y=True)
                     st.plotly_chart(fig_cash, use_container_width=True)
+                    last_r = df_hist['净现比'].iloc[-1]
+                    if last_r < 0.8: st.error(f"🚨 净现比 {last_r:.2f}，利润质量低！")
+                    else: st.success(f"💎 净现比 {last_r:.2f}，真金白银。")
             else: st.warning("暂无历史数据")
-        else: st.error("数据获取失败")
+            
+            # **阶段2：异步加载同行数据**
+            st.header("2. 🏔️ 行业地位 (加载中...)")
+            # 这一行是关键：它会触发同行数据加载，并缓存结果
+            df_peers = fetch_peers_data_concurrent(symbol)
+            
+            if not df_peers.empty:
+                fig_pos = px.scatter(df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称", text="名称", 
+                                     title="行业格局 (右上角为王者)", height=450)
+                fig_pos.update_traces(textposition='top center')
+                st.plotly_chart(fig_pos, use_container_width=True)
+            elif not df_peers.empty is True: # 如果df_peers是空的
+                st.info("同行对比数据仍在后台加载中，请稍候。")
+                st.experimental_rerun() # 触发一次刷新，让缓存生效
+            else:
+                st.warning("暂无同行对比数据。")
+
+        else: st.error("无法获取数据")
