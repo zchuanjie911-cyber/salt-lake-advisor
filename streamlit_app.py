@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 # ==========================================
 # 0. 页面配置
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v8.1", page_icon="🦁", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v8.2", page_icon="🦁", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # ==========================================
@@ -55,7 +55,7 @@ def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10)
     return sum(future_flows) + discounted_terminal
 
 # ==========================================
-# 2. 数据获取
+# 2. 数据获取 (安全赋值模式)
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_data(tickers, discount_rate):
@@ -90,8 +90,113 @@ def fetch_data(tickers, discount_rate):
             intrinsic = calculate_dcf(fcf_usd, growth, discount_rate/100)
             upside = (intrinsic - mkt_cap) / mkt_cap if mkt_cap > 0 else 0
             
-            snapshot.append({
-                "代码": symbol, "名称": cn_name, "现价": price, 
-                "潜在涨幅%": round(upside*100, 2), "DCF估值": round(price*(1+upside), 2),
-                "ROE%": round(roe*100, 2), "毛利率%": round(gm*100, 2),
-                "FCF收益率%": round
+            # --- 🛠️ 修复核心：分开写，防报错 ---
+            item = {}
+            item["代码"] = symbol
+            item["名称"] = cn_name
+            item["现价"] = price
+            item["潜在涨幅%"] = round(upside*100, 2)
+            item["DCF估值"] = round(price*(1+upside), 2)
+            item["ROE%"] = round(roe*100, 2)
+            item["毛利率%"] = round(gm*100, 2)
+            item["FCF收益率%"] = round((fcf_usd/mkt_cap)*100, 2) if mkt_cap > 0 else 0
+            item["市值(B)"] = round(mkt_cap/1e9, 2)
+            snapshot.append(item)
+            # --------------------------------
+            
+            if not inc.empty:
+                years = inc.columns[:4]
+                for d in years:
+                    # --- 🛠️ 历史数据也分开写 ---
+                    hist_item = {}
+                    hist_item["代码"] = symbol
+                    hist_item["名称"] = cn_name
+                    hist_item["年份"] = d.strftime("%Y")
+                    hist_item["营收"] = inc.loc['Total Revenue', d] if 'Total Revenue' in inc.index else 0
+                    hist_item["净利润"] = inc.loc['Net Income', d] if 'Net Income' in inc.index else 0
+                    
+                    if 'Gross Profit' in inc.index and 'Total Revenue' in inc.index:
+                        hist_item["毛利率"] = inc.loc['Gross Profit', d] / inc.loc['Total Revenue', d]
+                    else:
+                        hist_item["毛利率"] = 0
+                        
+                    history.append(hist_item)
+                    # -------------------------
+        except: continue
+        
+    progress.empty()
+    return pd.DataFrame(history).iloc[::-1], pd.DataFrame(snapshot)
+
+# ==========================================
+# 3. 侧边栏与主逻辑
+# ==========================================
+with st.sidebar:
+    st.header("🦁 超级终端 v8.2")
+    app_mode = st.radio("📡 选择模式", ["A. 猎手筛选 (批量)", "B. 巅峰对决 (手动PK)"])
+    st.divider()
+
+if app_mode == "A. 猎手筛选 (批量)":
+    with st.sidebar:
+        options = list(MARKET_GROUPS.keys()) + ["🔍 自选输入"]
+        choice = st.selectbox("选择战场", options)
+        if choice == "🔍 自选输入":
+            st.info("💡 示例: `苹果, 600519`")
+            user_txt = st.text_area("输入 (逗号隔开)", "NVDA, TSLA, 600519")
+            tickers = [x.strip() for x in user_txt.split(',') if x.strip()]
+        else:
+            tickers = MARKET_GROUPS[choice]
+        dr = st.slider("折现率 (%)", 6, 15, 9)
+    st.title("🌍 全球价值猎手")
+else:
+    with st.sidebar:
+        st.info("💡 混输模式: `苹果, 茅台, NVDA`")
+        default_txt = "苹果, 微软, 谷歌"
+        user_input = st.text_area("输入PK名单:", default_txt, height=100)
+        tickers = [x.strip() for x in user_input.split(',') if x.strip()]
+        dr = st.slider("折现率 (%)", 6, 15, 9)
+    st.title("⚔️ 巅峰对决")
+
+if tickers:
+    df_hist, df_val = fetch_data(tickers, dr)
+    
+    if not df_val.empty:
+        df_val = df_val.sort_values("潜在涨幅%", ascending=False)
+        
+        st.subheader("📸 估值与质量快照")
+        fig_dumb = go.Figure()
+        fig_dumb.add_trace(go.Scatter(x=df_val["现价"], y=df_val["名称"], mode='markers', name='现价', marker=dict(color='red', size=12)))
+        fig_dumb.add_trace(go.Scatter(x=df_val["DCF估值"], y=df_val["名称"], mode='markers', name='估值', marker=dict(color='green', size=12, symbol='diamond')))
+        for i in range(len(df_val)):
+            r = df_val.iloc[i]
+            c = 'green' if r['DCF估值'] > r['现价'] else 'red'
+            fig_dumb.add_shape(type="line", x0=r['现价'], y0=r['名称'], x1=r['DCF估值'], y1=r['名称'], line=dict(color=c, width=3))
+        fig_dumb.update_layout(title="1. 哑铃图: 价格 vs 价值", height=400, xaxis_title="价格", yaxis=dict(autorange="reversed"))
+        st.plotly_chart(fig_dumb, use_container_width=True)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            fig_upside = px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", title="2. 潜能排行榜", color_continuous_scale="RdYlGn", text="潜在涨幅%")
+            fig_upside.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+            st.plotly_chart(fig_upside, use_container_width=True)
+        with col2:
+            fig_scatter = px.scatter(
+                df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%",
+                hover_name="名称", text="名称", title="3. 黄金象限 (寻找右上角)",
+                labels={"FCF收益率%": "便宜度 (FCF Yield)", "ROE%": "赚钱能力 (ROE)"}, color_continuous_scale="RdYlGn"
+            )
+            fig_scatter.add_hline(y=15, line_dash="dot", line_color="gray")
+            fig_scatter.add_vline(x=4, line_dash="dot", line_color="gray")
+            st.plotly_chart(fig_scatter, use_container_width=True)
+
+        st.subheader("📋 详细核心数据")
+        st.dataframe(df_val.set_index("名称").style.background_gradient(subset=["潜在涨幅%"], cmap="RdYlGn", vmin=-50, vmax=50), use_container_width=True)
+
+        if app_mode == "B. 巅峰对决 (手动PK)" or "🔍" in str(st.session_state.get('choice', '')):
+            st.divider()
+            st.subheader("📈 历史趋势厮杀 (最近4年)")
+            c1, c2 = st.columns(2)
+            with c1: st.plotly_chart(px.line(df_hist, x="年份", y="营收", color="名称", markers=True, title="营收规模"), use_container_width=True)
+            with c2: st.plotly_chart(px.line(df_hist, x="年份", y="净利润", color="名称", markers=True, title="利润含金量"), use_container_width=True)
+            st.plotly_chart(px.bar(df_hist, x="年份", y="毛利率", color="名称", barmode="group", title="护城河对比 (毛利率)"), use_container_width=True)
+    else:
+        st.warning("暂无数据，请检查输入。")
