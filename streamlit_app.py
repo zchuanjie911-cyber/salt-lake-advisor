@@ -5,27 +5,30 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor
-# try:
-#     import tushare as ts
-#     TUSHARE_TOKEN = st.secrets.get("TUSHARE_TOKEN") 
-#     pro = ts.pro_api(TUSHARE_TOKEN) if TUSHARE_TOKEN else None
-# except Exception:
-#     pro = None
 
 # ==========================================
-# 0. 页面配置与初始化
+# 0. Tushare 初始化与数据源配置
 # ==========================================
-st.set_page_config(page_title="全球投资终端 v19.1 (猎手扩容)", page_icon="🌎", layout="wide")
-st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
+# 安全地导入 Tushare 并获取 Token
+try:
+    import tushare as ts
+    TUSHARE_TOKEN = st.secrets.get("TUSHARE_TOKEN") 
+    pro = ts.pro_api(TUSHARE_TOKEN) if TUSHARE_TOKEN else None
+except ImportError:
+    pro = None
+except Exception as e:
+    pro = None
+    st.sidebar.error(f"Tushare 初始化失败: {e}")
 
-# 初始化会话状态
-if 'peers_data_cache' not in st.session_state:
-    st.session_state.peers_data_cache = {}
-if 'current_peer_group' not in st.session_state:
-    st.session_state.current_peer_group = None
+# 初始化时在侧边栏提示 Tushare 状态
+if pro is None and TUSHARE_TOKEN is None:
+    st.sidebar.warning("Tushare Token未配置，国内股票数据质量可能较低。请在Secrets中设置TUSHARE_TOKEN。")
+elif pro is not None:
+    st.sidebar.success("Tushare 连接成功！")
+
 
 # ==========================================
-# 1. 数据字典与智能识别 (白名单扩充)
+# 1. 数据字典与智能识别
 # ==========================================
 STOCK_MAP = {
     # 核心美股 - Tech & Mega Cap
@@ -49,46 +52,38 @@ NAME_TO_TICKER.update({
     "苹果": "AAPL", "微软": "MSFT", "英伟达": "NVDA", "招行": "600036.SS", "伊利": "600887.SS"
 })
 
-# === 核心修改: 四大板块扩容 ===
 MARKET_GROUPS = {
     "🇺🇸 美股科技 (Tech)": [
         "AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", 
-        "TSM", "ASML", "BABA", "PDD" # 12支
+        "TSM", "ASML", "BABA", "PDD"
     ],
     "🇺🇸 美股护城河 (Value)": [
         "BRK-B", "V", "MA", "COST", "JPM", "JNJ", "PG", "XOM", 
-        "KO", "PEP", "MCD", "LLY", "UNH" # 13支
+        "KO", "PEP", "MCD", "LLY", "UNH"
     ],
     "🇭🇰 港股核心 (Core)": [
         "0700.HK", "9988.HK", "3690.HK", "0388.HK", "0941.HK", "0883.HK", 
-        "1810.HK", "1024.HK", "1299.HK", "0005.HK" # 10支
+        "1810.HK", "1024.HK", "1299.HK", "0005.HK"
     ],
     "🇨🇳 A股核心 (Core)": [
         "600519.SS", "000858.SZ", "600900.SS", "300750.SZ", "600036.SS", 
         "601318.SS", "600188.SS", "601088.SS", "600887.SS", "600585.SS", 
-        "002714.SZ", "600030.SS", "002594.SZ", "300760.SZ" # 14支
+        "002714.SZ", "600030.SS", "002594.SZ", "300760.SZ"
     ]
 }
-# ========================
-
+# 辅助函数保持不变
 def smart_parse_symbol(user_input):
     clean = user_input.strip()
-    
     if clean in NAME_TO_TICKER: return NAME_TO_TICKER[clean]
-    
     for name, ticker in NAME_TO_TICKER.items():
-        if clean in name: 
-            return ticker
-
+        if clean in name: return ticker
     code = clean.upper()
     if code.isdigit():
         if len(code) == 6 and code.startswith('6'): return f"{code}.SS"
         if len(code) == 6 and (code.startswith('0') or code.startswith('3')): return f"{code}.SZ"
         if len(code) == 4: return f"{code}.HK"
         if len(code) == 5 and code.startswith('0'): return f"{code[1:]}.HK"
-    
     return code
-
 def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10):
     if fcf <= 0: return 0
     future_flows = []
@@ -99,10 +94,10 @@ def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10)
     terminal_val = (fcf * ((1 + growth_rate) ** years) * (1 + terminal_rate)) / (discount_rate - terminal_rate)
     discounted_terminal = terminal_val / ((1 + discount_rate) ** years)
     return sum(future_flows) + discounted_terminal
-
-# ==========================================
-# 2. 数据获取 (保持稳定)
-# ==========================================
+def get_peer_group_and_name(symbol):
+    for group_name, tickers in MARKET_GROUPS.items():
+        if symbol in tickers: return group_name, tickers
+    return None, None
 def get_stock_basic_info(symbol):
     try:
         t = yf.Ticker(symbol)
@@ -116,27 +111,119 @@ def get_stock_basic_info(symbol):
         }
     except: return None
 
-def get_peer_group_and_name(symbol):
-    for group_name, tickers in MARKET_GROUPS.items():
-        if symbol in tickers: 
-            return group_name, tickers
-    return None, None
 
+# ==========================================
+# 2. Tushare 专有数据拉取函数 (新增)
+# ==========================================
+@st.cache_data(ttl=3600)
+def fetch_tushare_data(ts_code):
+    """
+    通过 Tushare 获取 A股/港股核心财务数据。
+    ts_code 格式：'600519.SH' 或 '00700.HK'
+    返回: info, biz, df_hist
+    """
+    global pro
+    if pro is None:
+        raise ConnectionError("Tushare Pro API 未成功初始化。")
+
+    # Tushare 交易日历：获取最新的一个交易日，确保数据是近期的
+    end_date = pd.to_datetime('today').strftime('%Y%m%d')
+    start_date = (pd.to_datetime('today') - pd.DateOffset(years=5)).strftime('%Y%m%d')
+    
+    # 1. 估值和基本信息 (获取最新 ROE 和市值)
+    df_basic = pro.query('daily_basic', ts_code=ts_code, end_date=end_date, fields='trade_date,total_share,circ_share,total_mv,pe_ttm,roe')
+    
+    # 2. 利润表 (用于营收和净利润数据)
+    df_inc = pro.query('income', ts_code=ts_code, start_date=start_date, end_date=end_date, fields='end_date,revenue,n_income,dt_ann')
+    
+    # 3. 现金流量表 (用于 OCF)
+    df_cf = pro.query('cashflow', ts_code=ts_code, start_date=start_date, end_date=end_date, fields='end_date,n_cashflow_act')
+    
+    # 4. 资产负债表 (用于应收账款)
+    df_bal = pro.query('balancesheet', ts_code=ts_code, start_date=start_date, end_date=end_date, fields='end_date,total_receiv')
+
+    if df_basic.empty or df_inc.empty:
+        raise ValueError("Tushare未返回足够的基本面或利润数据。")
+        
+    # --- 数据清洗与格式化 ---
+    
+    # 1. 商业模式 (Biz)
+    latest_basic = df_basic.iloc[0]
+    
+    # Tushare没有直接的毛利率和净利率，需要用利润表计算
+    latest_inc = df_inc.iloc[0]
+    gross_profit = latest_inc.get('revenue', 0) - latest_inc.get('cost_oper', 0) if 'cost_oper' in latest_inc.index else 0 # Tushare默认字段可能需要查询
+    
+    biz = {
+        "ROE": latest_basic.get('roe', 0) / 100, # Tushare的ROE通常是百分比值
+        "毛利率": 0, # Tushare缺乏直接的毛利/成本数据，设为0或通过复杂的中间表计算
+        "净利率": latest_inc.get('n_income', 0) / latest_inc.get('revenue', 1) if latest_inc.get('revenue') else 0
+    }
+    
+    # 2. 历史趋势 (df_hist)
+    # 合并INC, CF, BAL表，并按报告期（end_date）对齐
+    df_hist_merged = pd.merge(df_inc, df_cf, on='end_date', how='inner')
+    df_hist_merged = pd.merge(df_hist_merged, df_bal, on='end_date', how='inner')
+    
+    # 转换为 yfinance 兼容格式
+    df_hist = df_hist_merged.rename(columns={
+        'end_date': '年份',
+        'revenue': '营收',
+        'n_income': '净利润',
+        'n_cashflow_act': '现金流',
+        'total_receiv': '应收'
+    })
+    
+    df_hist['年份'] = df_hist['年份'].apply(lambda x: pd.to_datetime(x).strftime('%Y'))
+    df_hist = df_hist.sort_values(by='年份').drop_duplicates(subset=['年份'], keep='last').tail(5)
+    
+    # 计算衍生指标
+    df_hist['应收占比%'] = (df_hist['应收'] / df_hist['营收']) * 100
+    df_hist['净现比'] = (df_hist['现金流'] / df_hist['净利润']).clip(upper=5) # 限制异常值
+    
+    # 3. 构造 info 字典
+    # 简单构造显示名称，Tushare拉不到 shortName
+    display_name = STOCK_MAP.get(ts_code.replace('.SH', '.SS').replace('.SZ', '.SZ').replace('.HK', '.HK'), ts_code)
+    
+    info = {
+        'regularMarketPrice': None, # Tushare实时价格需要另一个接口
+        'shortName': display_name
+    }
+
+    return info, biz, df_hist, display_name
+
+
+# ==========================================
+# 3. 核心数据获取 (分流逻辑)
+# ==========================================
 @st.cache_data(ttl=3600)
 def fetch_main_stock_data(symbol):
-    info = {}
-    biz = {}
-    df_hist = pd.DataFrame()
-    
-    # if pro and (symbol.endswith(('.SS', '.SZ')) or symbol.endswith('.HK')):
-    #     try:
-    #         # 这里是 Tushare 或 AkShare 优先拉取逻辑 (为了演示简化，只保留 yfinance 逻辑)
-    #         # 实际集成需要复杂的函数 fetch_tushare_data(symbol)
-    #         pass 
-    #     except Exception as e:
-    #         st.warning(f"Tushare/AkShare拉取失败，回退到yfinance：{e}")
+    """
+    主数据拉取函数: Tushare优先 (A/H股)，否则使用 yfinance。
+    """
+    is_domestic = symbol.endswith(('.SS', '.SZ', '.HK'))
+
+    if is_domestic and pro is not None:
+        # 尝试使用 Tushare
+        ts_code = symbol.replace('.SS', '.SH').replace('.SZ', '.SZ').replace('.HK', '.HK') # 转换为 Tushare 代码格式
+        try:
+            info, biz, df_hist, display_name = fetch_tushare_data(ts_code)
+            st.warning(f"✅ 【{display_name}】数据由 Tushare 提供 (仅财报)")
+            
+            # Tushare 缺乏价格信息，回退到 yfinance 补充价格
+            try:
+                yf_info = yf.Ticker(symbol).info
+                info['regularMarketPrice'] = yf_info.get('regularMarketPrice')
+            except: pass
+            
+            return info, biz, df_hist, display_name
+
+        except Exception as e:
+            st.warning(f"Tushare数据拉取失败 ({e.__class__.__name__})，回退到 yfinance...")
 
 
+    # Tushare 失败 或 非国内股票，回退到 yfinance (v17.1 容错逻辑)
+    info = {}; biz = {}; df_hist = pd.DataFrame()
     try:
         stock = yf.Ticker(symbol)
         info = stock.info if stock.info else {}
@@ -170,14 +257,16 @@ def fetch_main_stock_data(symbol):
             df_hist = pd.DataFrame(history).iloc[::-1]
 
         display_name = info.get('shortName', info.get('longName', symbol))
-        
+        st.info(f"⚡ 【{display_name}】数据由 yfinance 提供")
         return info, biz, df_hist, display_name
     except Exception as e: 
-        print(f"Error fetching data for {symbol}: {e}")
+        print(f"yfinance fallback failed for {symbol}: {e}")
         return None, None, None, symbol
 
+# ==========================================
+# 4. 辅助函数 (保持不变)
+# ==========================================
 def load_peers_data(group_name, target_group):
-    """加载同行数据，并存入缓存"""
     safe_group = target_group[:10]
     
     with st.spinner(f'🏎️ 正在多线程加载【{group_name}】同行数据...'):
@@ -194,11 +283,9 @@ def load_peers_data(group_name, target_group):
 
 @st.cache_data(ttl=3600)
 def fetch_hunter_data_concurrent(tickers, discount_rate):
-    """猎手模式并发获取"""
     ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "TSM": 32.5}
     def fetch_one(raw_sym):
         symbol = smart_parse_symbol(raw_sym)
-        # 仅处理预设股票池，保证数据质量
         if symbol not in STOCK_MAP and not symbol.endswith(('.SS', '.SZ', '.HK')):
             return None
             
@@ -234,10 +321,10 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
     return pd.DataFrame(snapshot)
 
 # ==========================================
-# 3. 核心界面逻辑
+# 5. 主界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("🌎 超级终端 v19.1")
+    st.header("🌎 超级终端 v20.0")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     st.divider()
 
@@ -284,7 +371,7 @@ else:
     # --- Mode B: 核心透视 (全球查询) ---
     with st.sidebar:
         st.info("💡 输入全球代码 (如 DAX.DE, NVDA, 600519)")
-        raw_input = st.text_input("分析对象:", "NVDA").strip()
+        raw_input = st.text_input("分析对象:", "600519.SS").strip() # 默认值改为茅台，方便测试 Tushare
         symbol = smart_parse_symbol(raw_input)
     
     st.title(f"🌎 核心透视: {symbol}")
