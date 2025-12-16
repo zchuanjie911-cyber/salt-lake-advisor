@@ -7,10 +7,16 @@ from plotly.subplots import make_subplots
 from concurrent.futures import ThreadPoolExecutor
 
 # ==========================================
-# 0. 页面配置
+# 0. 页面配置与初始化
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v12.1 (分阶段加载)", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v13.0 (异步缓存)", page_icon="🏎️", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
+
+# 初始化会话状态 (用于存储高延迟的同行数据)
+if 'peers_data_cache' not in st.session_state:
+    st.session_state.peers_data_cache = {}
+if 'current_peer_group' not in st.session_state:
+    st.session_state.current_peer_group = None
 
 # ==========================================
 # 1. 数据字典与智能识别
@@ -57,7 +63,7 @@ def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10)
     return sum(future_flows) + discounted_terminal
 
 # ==========================================
-# 2. 极速数据获取 (分离主角与配角)
+# 2. 极速数据获取
 # ==========================================
 def get_stock_basic_info(symbol):
     try:
@@ -70,6 +76,18 @@ def get_stock_basic_info(symbol):
             "营收增长%": (i.get('revenueGrowth', 0) or 0)*100
         }
     except: return None
+
+# 【修改】将同行数据缓存和获取分开
+def get_peer_group_and_name(symbol):
+    """根据符号获取其所属的同行组名和列表"""
+    target_group = MARKET_GROUPS["🇺🇸 美股科技 (AI & Chips)"]
+    group_name = "🇺🇸 美股科技 (AI & Chips)"
+    for k, v in MARKET_GROUPS.items():
+        if symbol in v: 
+            target_group = v
+            group_name = k
+            break
+    return group_name, target_group
 
 @st.cache_data(ttl=3600)
 def fetch_main_stock_data(symbol):
@@ -109,21 +127,21 @@ def fetch_main_stock_data(symbol):
         return info, biz, pd.DataFrame(history).iloc[::-1]
     except: return None, None, pd.DataFrame()
 
-@st.cache_data(ttl=3600)
-def fetch_peers_data_concurrent(symbol):
-    """单独获取同行数据 (使用多线程)"""
-    target_group = MARKET_GROUPS["🇺🇸 美股科技 (AI & Chips)"]
-    for k, v in MARKET_GROUPS.items():
-        if symbol in v: target_group = v; break
+# 【修改】单独的、触发式的同行数据获取函数
+def load_peers_data(group_name, target_group):
+    """加载同行数据，并存入缓存"""
     safe_group = target_group[:10]
     
-    peers_data = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        results = executor.map(get_stock_basic_info, safe_group)
-    for res in results:
-        if res: peers_data.append(res)
+    with st.spinner(f'🏎️ 正在多线程加载【{group_name}】同行数据...'):
+        peers_data = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            results = executor.map(get_stock_basic_info, safe_group)
+        for res in results:
+            if res: peers_data.append(res)
         
-    return pd.DataFrame(peers_data)
+        # 存入会话缓存
+        st.session_state.peers_data_cache[group_name] = pd.DataFrame(peers_data)
+        st.session_state.current_peer_group = group_name
 
 @st.cache_data(ttl=3600)
 def fetch_hunter_data_concurrent(tickers, discount_rate):
@@ -155,7 +173,6 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
                 "市值(B)": round(mkt_cap/1e9, 2)
             }
         except: return None
-
     snapshot = []
     with ThreadPoolExecutor(max_workers=10) as executor:
         results = executor.map(fetch_one, tickers)
@@ -167,7 +184,7 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
 # 3. 核心界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("⚡ 超级终端 v12.1")
+    st.header("⚡ 超级终端 v13.0")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     st.divider()
 
@@ -203,26 +220,29 @@ if mode == "A. 全球猎手 (批量)":
             st.plotly_chart(fig_dumb, use_container_width=True)
 
             c1, c2 = st.columns(2)
-            with c1: st.plotly_chart(px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", color_continuous_scale="RdYlGn", title="2. 潜能排行榜"), use_container_width=True)
-            with c2: st.plotly_chart(px.scatter(df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%", text="名称", title="3. 黄金象限", color_continuous_scale="RdYlGn"), use_container_width=True)
+            with c1: st.plotly_chart(px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", color_continuous_scale="RdYlGn", title="2. 潜能排行榜 (按涨幅排序)"), use_container_width=True)
+            with c2: st.plotly_chart(px.scatter(df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%", text="名称", title="3. 黄金象限 (质优价廉)", color_continuous_scale="RdYlGn"), use_container_width=True)
             
             st.dataframe(df_val.style.background_gradient(subset=["潜在涨幅%"], cmap="RdYlGn", vmin=-50, vmax=50), use_container_width=True)
         else: st.warning("未找到数据")
 
 else:
-    # --- Mode B (核心透视) - 阶段加载核心 ---
+    # --- Mode B (核心透视) - 异步加载核心 ---
     with st.sidebar:
         raw_input = st.text_input("分析对象:", "NVDA").strip()
         symbol = smart_parse_symbol(raw_input)
     
     st.title(f"📊 核心透视: {symbol}")
     if symbol:
-        # **阶段1：快速加载主角数据**
+        # **阶段1：快速加载主角数据 (瞬间)**
         info, biz, df_hist = fetch_main_stock_data(symbol) 
         
         if info:
             cn_name = STOCK_MAP.get(symbol, info.get('shortName', symbol))
             st.caption(f"分析对象: {cn_name}")
+            
+            # 获取同行组名 (用于异步加载时的 Key)
+            group_name, target_group = get_peer_group_and_name(symbol)
 
             # 1. 商业模式 (即时加载)
             st.header("1. 🏢 商业模式")
@@ -249,7 +269,7 @@ else:
                     fig_rev = make_subplots(specs=[[{"secondary_y": True}]])
                     fig_rev.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['营收'], name="营收", marker_color='lightblue'), secondary_y=False)
                     fig_rev.add_trace(go.Scatter(x=df_hist['年份'], y=df_hist['应收占比%'], name="应收占比%", mode='lines+markers', line=dict(color='red', width=3)), secondary_y=True)
-                    fig_rev.update_layout(title="⚠️ 营收虚胖检测 (红线向上=危险)")
+                    fig_rev.update_layout(title="⚠️ 营收虚胖检测")
                     st.plotly_chart(fig_rev, use_container_width=True)
                     last_ratio = df_hist['应收占比%'].iloc[-1]
                     if last_ratio > 30: st.error(f"🚨 应收占比 {last_ratio:.1f}%，虚胖！")
@@ -260,28 +280,35 @@ else:
                     fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['净利润'], name="净利润", marker_color='#a5d6a7'), secondary_y=False)
                     fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['现金流'], name="现金流", marker_color='#2e7d32'), secondary_y=False)
                     fig_cash.add_trace(go.Scatter(x=df_hist['年份'], y=df_hist['净现比'], name="净现比", mode='lines+markers', line=dict(color='gold', width=3, dash='dot')), secondary_y=True)
-                    fig_cash.update_layout(title="💰 利润真实性 (黄线>1=优)")
+                    fig_cash.update_layout(title="💰 利润真实性")
                     fig_cash.add_hline(y=1.0, line_dash="dash", line_color="gray", secondary_y=True)
                     st.plotly_chart(fig_cash, use_container_width=True)
                     last_r = df_hist['净现比'].iloc[-1]
                     if last_r < 0.8: st.error(f"🚨 净现比 {last_r:.2f}，利润质量低！")
                     else: st.success(f"💎 净现比 {last_r:.2f}，真金白银。")
             else: st.warning("暂无历史数据")
+
+
+            # 2. 行业地位 (异步加载/缓存)
+            st.header(f"2. 🏔️ 行业地位 ({group_name})")
             
-            # **阶段2：异步加载同行数据**
-            st.header("2. 🏔️ 行业地位 (加载中...)")
-            # 这一行是关键：它会触发同行数据加载，并缓存结果
-            df_peers = fetch_peers_data_concurrent(symbol)
-            
-            if not df_peers.empty:
+            # 检查缓存中是否有数据
+            df_peers = st.session_state.peers_data_cache.get(group_name)
+
+            if df_peers is not None:
+                # 缓存命中：直接渲染 (秒开)
                 fig_pos = px.scatter(df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称", text="名称", 
                                      title="行业格局 (右上角为王者)", height=450)
                 fig_pos.update_traces(textposition='top center')
                 st.plotly_chart(fig_pos, use_container_width=True)
-            elif not df_peers.empty is True: # 如果df_peers是空的
-                st.info("同行对比数据仍在后台加载中，请稍候。")
-                st.experimental_rerun() # 触发一次刷新，让缓存生效
+                st.success("✨ 数据已从缓存中加载 (秒开)")
             else:
-                st.warning("暂无同行对比数据。")
-
+                # 缓存未命中：显示按钮，让用户主动触发加载
+                st.warning(f"同行对比数据尚未加载。点击下方按钮进行多线程加载。")
+                if st.button(f'🏎️ 立即加载【{group_name}】同行数据'):
+                    # 调用高延迟加载函数，并将结果存入缓存
+                    load_peers_data(group_name, target_group)
+                    # 重新运行脚本以显示结果
+                    st.experimental_rerun()
+        
         else: st.error("无法获取数据")
