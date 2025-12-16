@@ -9,45 +9,40 @@ from concurrent.futures import ThreadPoolExecutor
 # ==========================================
 # 0. 页面配置与初始化
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v16.0 (能源板块新增)", page_icon="💡", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v17.0 (全球查询)", page_icon="🌎", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
-# 初始化会话状态 (用于存储高延迟的同行数据)
+# 初始化会话状态
 if 'peers_data_cache' not in st.session_state:
     st.session_state.peers_data_cache = {}
 if 'current_peer_group' not in st.session_state:
     st.session_state.current_peer_group = None
 
 # ==========================================
-# 1. 数据字典与智能识别 (新增能源股)
+# 1. 数据字典与智能识别 (保留核心中文支持)
 # ==========================================
 STOCK_MAP = {
-    "AAPL": "苹果", "MSFT": "微软", "GOOG": "谷歌", "AMZN": "亚马逊", "META": "Meta", "TSLA": "特斯拉", "NVDA": "英伟达", "AMD": "超威半导体",
-    "TSM": "台积电", "ASML": "阿斯麦", "BABA": "阿里巴巴(美)", "PDD": "拼多多", "JD": "京东", "BIDU": "百度", "NTES": "网易",
-    "BRK-B": "伯克希尔哈撒韦", "V": "威士", "MA": "万事达", "COST": "开市客", "MCD": "麦当劳", "KO": "可口可乐", "PEP": "百事", "LLY": "礼来",
-    "NVO": "诺和诺德", "UNH": "联合健康", "JPM": "摩根大通", "JNJ": "强生", "PG": "宝洁", "XOM": "埃克森美孚", "CVX": "雪佛龙", "DIS": "迪士尼",
-    "0700.HK": "腾讯控股", "9988.HK": "阿里巴巴(港)", "3690.HK": "美团", "0388.HK": "香港交易所", "0941.HK": "中国移动", "0883.HK": "中国海洋石油",
-    "1299.HK": "友邦保险", "0005.HK": "汇丰控股", "1088.HK": "中国神华", "1810.HK": "小米集团", "2015.HK": "理想汽车", "0981.HK": "中芯国际",
-    "600519.SS": "贵州茅台", "000858.SZ": "五粮液", "600900.SS": "长江电力", "300750.SZ": "宁德时代", "002594.SZ": "比亚迪", "600660.SS": "福耀玻璃",
-    "300760.SZ": "迈瑞医疗", "600036.SS": "招商银行", "601318.SS": "中国平安", "601857.SS": "中国石油", "601225.SS": "陕西煤业", "000792.SZ": "盐湖股份",
-    "600188.SS": "中煤能源",
-    "601088.SS": "中国神华(A)",
-    "600919.SS": "江苏银行"
+    # 保持核心白名单，用于智能识别和同行分组
+    "AAPL": "苹果", "MSFT": "微软", "GOOG": "谷歌", "NVDA": "英伟达", "TSM": "台积电",
+    "0700.HK": "腾讯控股", "600519.SS": "贵州茅台", "600188.SS": "中煤能源", "601318.SS": "中国平安",
+    "601088.SS": "中国神华(A)", "0883.HK": "中国海洋石油", "0941.HK": "中国移动",
+    "600036.SS": "招商银行", "600887.SS": "伊利股份", "600585.SS": "海螺水泥",
+    "BRK-B": "伯克希尔哈撒韦", "COST": "开市客", "JPM": "摩根大通",
 }
-# 建立全称 -> 代码的映射
+
 NAME_TO_TICKER = {v: k for k, v in STOCK_MAP.items()}
-# 增加热门简称映射
 NAME_TO_TICKER.update({
-    "腾讯": "0700.HK", "茅台": "600519.SS", "平安": "601318.SS", "招行": "600036.SS", "五粮液": "000858.SZ", 
-    "阿里": "9988.HK", "英伟达": "NVDA", "中煤": "600188.SS", "神华": "1088.HK",
-    "兖州煤业": "600188.SS", "中石化": "600028.SS", "中石油": "601857.SS"
+    "腾讯": "0700.HK", "茅台": "600519.SS", "平安": "601318.SS", "中煤": "600188.SS", "神华": "601088.SS",
+    "苹果": "AAPL", "微软": "MSFT", "英伟达": "NVDA", "招行": "600036.SS", "伊利": "600887.SS"
 })
 
 MARKET_GROUPS = {
-    "🇺🇸 美股科技 (AI & Chips)": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "TSM", "ASML", "BABA", "PDD"],
-    "🇨🇳 能源/煤炭 (Coal & Oil)": ["600188.SS", "601857.SS", "1088.HK", "0883.HK", "601088.SS", "600900.SS"], # 新增能源煤炭组
-    "🇺🇸 美股护城河 (Moat & Value)": ["BRK-B", "V", "MA", "COST", "MCD", "KO", "PEP", "LLY", "NVO", "UNH", "JPM", "JNJ", "PG", "XOM", "CVX", "DIS"],
-    "🇨🇳 A股核心 (Core Assets)": ["600519.SS", "000858.SZ", "600036.SS", "601318.SS", "300750.SZ", "002594.SZ", "600660.SS", "300760.SZ"] 
+    "🇺🇸 美股科技 (AI & Chips)": ["AAPL", "MSFT", "GOOG", "NVDA", "TSM"],
+    "🇨🇳 A股消费/制造": ["600519.SS", "600887.SS", "600585.SS"], 
+    "🇨🇳 A股金融/公用": ["600036.SS", "601318.SS", "600188.SS"], 
+    "🇨🇳 能源/资源": ["600188.SS", "601088.SS", "0883.HK"], 
+    "🇺🇸 核心价值股": ["BRK-B", "COST", "JPM"],
+    "🇭🇰 港股核心 (TMT/消费)": ["0700.HK", "0941.HK"]
 }
 
 def smart_parse_symbol(user_input):
@@ -69,6 +64,7 @@ def smart_parse_symbol(user_input):
         if len(code) == 4: return f"{code}.HK"
         if len(code) == 5 and code.startswith('0'): return f"{code[1:]}.HK"
     
+    # 4. 全球查询 - 返回原始代码
     return code
 
 def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10):
@@ -83,14 +79,17 @@ def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10)
     return sum(future_flows) + discounted_terminal
 
 # ==========================================
-# 2. 极速数据获取 (并发与分段)
+# 2. 数据获取 (核心改动在这里)
 # ==========================================
 def get_stock_basic_info(symbol):
+    # 此函数保持不变，用于同行并发查询
     try:
         t = yf.Ticker(symbol)
         i = t.info
+        # 尝试从 info['shortName'] 获取名称，否则使用代码
+        name = i.get('shortName', symbol)
         return {
-            "名称": STOCK_MAP.get(symbol, symbol),
+            "名称": name,
             "市值(B)": (i.get('marketCap', 0) or 0)/1e9,
             "毛利率%": (i.get('grossMargins', 0) or 0)*100,
             "营收增长%": (i.get('revenueGrowth', 0) or 0)*100
@@ -98,13 +97,12 @@ def get_stock_basic_info(symbol):
     except: return None
 
 def get_peer_group_and_name(symbol):
-    # 修正逻辑：先尝试在所有 MARKET_GROUPS 中找到匹配项
+    """尝试匹配预设的同行分组"""
     for group_name, tickers in MARKET_GROUPS.items():
         if symbol in tickers: 
             return group_name, tickers
-    # 如果找不到，默认使用美股科技组作为备选
-    default_group = MARKET_GROUPS["🇺🇸 美股科技 (AI & Chips)"]
-    return "🇺🇸 美股科技 (AI & Chips)", default_group
+    # 如果找不到，返回 None，表示没有预设同行组
+    return None, None
 
 @st.cache_data(ttl=3600)
 def fetch_main_stock_data(symbol):
@@ -123,16 +121,16 @@ def fetch_main_stock_data(symbol):
             "净利率": info.get('profitMargins', 0) or 0
         }
         
-        # 核心数据检查
+        # 核心数据检查 (使用 shortName 或 longName 作为展示名称)
+        display_name = info.get('shortName', info.get('longName', symbol))
         if not info or info.get('regularMarketPrice') is None:
              raise ValueError("Essential financial data missing.")
 
         # 历史趋势
         history = []
-        if not inc.empty and len(inc.columns) >= 2: # 至少有2年数据
+        if not inc.empty and len(inc.columns) >= 2:
             years = inc.columns[:5]
             for d in years:
-                # 强化容错：所有分母都设默认值
                 rev = inc.loc['Total Revenue', d] if 'Total Revenue' in inc.index and inc.loc['Total Revenue', d] else 1.0
                 rec = bal.loc['Receivables', d] if 'Receivables' in bal.index and bal.loc['Receivables', d] is not None else 0
                 ni = inc.loc['Net Income', d] if 'Net Income' in inc.index and inc.loc['Net Income', d] else 1.0
@@ -144,10 +142,10 @@ def fetch_main_stock_data(symbol):
                     "净现比": (ocf / ni) if abs(ni) > 1 else 0 
                 })
         
-        return info, biz, pd.DataFrame(history).iloc[::-1]
+        return info, biz, pd.DataFrame(history).iloc[::-1], display_name
     except Exception as e: 
         print(f"Error fetching data for {symbol}: {e}")
-        return None, None, None
+        return None, None, None, symbol # 失败时返回原始代码作为名称
 
 def load_peers_data(group_name, target_group):
     """加载同行数据，并存入缓存"""
@@ -167,10 +165,14 @@ def load_peers_data(group_name, target_group):
 
 @st.cache_data(ttl=3600)
 def fetch_hunter_data_concurrent(tickers, discount_rate):
-    """猎手模式并发获取"""
+    """猎手模式并发获取 (仅限白名单，确保数据质量)"""
     ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "TSM": 32.5}
     def fetch_one(raw_sym):
         symbol = smart_parse_symbol(raw_sym)
+        # 仅处理白名单内的股票，否则跳过
+        if symbol not in STOCK_MAP and not symbol.endswith(('.SS', '.SZ', '.HK')):
+            return None
+            
         try:
             stock = yf.Ticker(symbol)
             info = stock.info
@@ -206,16 +208,17 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
 # 3. 核心界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("⚡ 超级终端 v15.1")
+    st.header("🌎 超级终端 v17.0")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     st.divider()
 
 if mode == "A. 全球猎手 (批量)":
-    # --- Mode A ---
+    # --- Mode A: 全球猎手 (批量) ---
     with st.sidebar:
         options = list(MARKET_GROUPS.keys()) + ["🔍 自选输入"]
         choice = st.selectbox("选择战场", options)
         if choice == "🔍 自选输入":
+            st.info("💡 批量分析仅支持预设的股票池，保证数据准确性。")
             user_txt = st.text_area("输入 (逗号隔开)", "NVDA, 腾讯, 贵州茅台")
             tickers = [x.strip() for x in user_txt.split(',') if x.strip()]
         else: tickers = MARKET_GROUPS[choice]
@@ -242,27 +245,26 @@ if mode == "A. 全球猎手 (批量)":
             st.plotly_chart(fig_dumb, use_container_width=True)
 
             c1, c2 = st.columns(2)
-            with c1: st.plotly_chart(px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", color_continuous_scale="RdYlGn", title="2. 潜能排行榜 (按涨幅排序)"), use_container_width=True)
+            with c1: st.plotly_chart(px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", color_continuous_scale="RdYlGn", title="2. 潜能排行榜"), use_container_width=True)
             with c2: st.plotly_chart(px.scatter(df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%", text="名称", title="3. 黄金象限 (质优价廉)", color_continuous_scale="RdYlGn"), use_container_width=True)
             
             st.dataframe(df_val.style.background_gradient(subset=["潜在涨幅%"], cmap="RdYlGn", vmin=-50, vmax=50), use_container_width=True)
         else: st.warning("未找到数据")
 
 else:
-    # --- Mode B (核心透视) - 阶段加载核心 ---
+    # --- Mode B: 核心透视 (全球查询) ---
     with st.sidebar:
-        st.info("💡 示例: NVDA, 贵州茅台, 中煤, 600188")
-        raw_input = st.text_input("分析对象:", "NVDA").strip() # <-- 默认值改回 NVDA
+        st.info("💡 输入全球代码 (如 DAX.DE, NVDA, 600519)")
+        raw_input = st.text_input("分析对象:", "NVDA").strip()
         symbol = smart_parse_symbol(raw_input)
     
-    st.title(f"📊 核心透视: {symbol}")
+    st.title(f"🌎 核心透视: {symbol}")
     if symbol:
         # **阶段1：快速加载主角数据 (瞬间)**
-        info, biz, df_hist = fetch_main_stock_data(symbol) 
+        info, biz, df_hist, display_name = fetch_main_stock_data(symbol) 
         
         if info:
-            cn_name = STOCK_MAP.get(symbol, info.get('shortName', symbol))
-            st.caption(f"分析对象: {cn_name}")
+            st.caption(f"分析对象名称: {display_name}")
             
             group_name, target_group = get_peer_group_and_name(symbol)
 
@@ -311,20 +313,23 @@ else:
             else: st.warning("⚠️ 暂无历史财务数据，请确认股票已上市并有公开年报。")
 
 
-            # 2. 行业地位 (异步加载/缓存)
-            st.header(f"2. 🏔️ 行业地位 ({group_name})")
-            
-            df_peers = st.session_state.peers_data_cache.get(group_name)
+            # 2. 行业地位 (异步加载/缓存或跳过)
+            if group_name:
+                st.header(f"2. 🏔️ 行业地位 ({group_name})")
+                df_peers = st.session_state.peers_data_cache.get(group_name)
 
-            if df_peers is not None:
-                fig_pos = px.scatter(df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称", text="名称", 
-                                     title="行业格局 (右上角为王者)", height=450)
-                fig_pos.update_traces(textposition='top center')
-                st.plotly_chart(fig_pos, use_container_width=True)
-                st.success("✨ 数据已从缓存中加载 (秒开)")
+                if df_peers is not None:
+                    fig_pos = px.scatter(df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称", text="名称", 
+                                         title="行业格局 (右上角为王者)", height=450)
+                    fig_pos.update_traces(textposition='top center')
+                    st.plotly_chart(fig_pos, use_container_width=True)
+                    st.success("✨ 数据已从缓存中加载 (秒开)")
+                else:
+                    st.warning(f"同行对比数据尚未加载。点击下方按钮进行多线程加载。")
+                    if st.button(f'🏎️ 立即加载【{group_name}】同行数据'):
+                        load_peers_data(group_name, target_group)
             else:
-                st.warning(f"同行对比数据尚未加载。点击下方按钮进行多线程加载。")
-                if st.button(f'🏎️ 立即加载【{group_name}】同行数据'):
-                    load_peers_data(group_name, target_group)
-        
+                 st.header("2. 🏔️ 行业地位")
+                 st.info("该股票不在预设的同行分析组中，无法进行行业地位对比分析。")
+
         else: st.error(f"❌ 核心数据获取失败。请检查股票代码 `{symbol}` 是否正确，或数据源暂不可用。")
