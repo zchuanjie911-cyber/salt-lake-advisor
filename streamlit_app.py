@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 # ==========================================
 # 0. 页面配置与初始化
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v15.2 (中煤修正版)", page_icon="💡", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v16.0 (能源板块新增)", page_icon="💡", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # 初始化会话状态 (用于存储高延迟的同行数据)
@@ -19,7 +19,7 @@ if 'current_peer_group' not in st.session_state:
     st.session_state.current_peer_group = None
 
 # ==========================================
-# 1. 数据字典与智能识别 (添加中煤能源 600188.SS)
+# 1. 数据字典与智能识别 (新增能源股)
 # ==========================================
 STOCK_MAP = {
     "AAPL": "苹果", "MSFT": "微软", "GOOG": "谷歌", "AMZN": "亚马逊", "META": "Meta", "TSLA": "特斯拉", "NVDA": "英伟达", "AMD": "超威半导体",
@@ -30,39 +30,38 @@ STOCK_MAP = {
     "1299.HK": "友邦保险", "0005.HK": "汇丰控股", "1088.HK": "中国神华", "1810.HK": "小米集团", "2015.HK": "理想汽车", "0981.HK": "中芯国际",
     "600519.SS": "贵州茅台", "000858.SZ": "五粮液", "600900.SS": "长江电力", "300750.SZ": "宁德时代", "002594.SZ": "比亚迪", "600660.SS": "福耀玻璃",
     "300760.SZ": "迈瑞医疗", "600036.SS": "招商银行", "601318.SS": "中国平安", "601857.SS": "中国石油", "601225.SS": "陕西煤业", "000792.SZ": "盐湖股份",
-    "600188.SS": "中煤能源"  # <-- 新增：原兖州煤业
+    "600188.SS": "中煤能源",
+    "601088.SS": "中国神华(A)",
+    "600919.SS": "江苏银行"
 }
 # 建立全称 -> 代码的映射
 NAME_TO_TICKER = {v: k for k, v in STOCK_MAP.items()}
 # 增加热门简称映射
 NAME_TO_TICKER.update({
     "腾讯": "0700.HK", "茅台": "600519.SS", "平安": "601318.SS", "招行": "600036.SS", "五粮液": "000858.SZ", 
-    "阿里": "9988.HK", "港交所": "0388.HK", "中移动": "0941.HK", "中海油": "0883.HK", "神华": "1088.HK",
-    "苹果": "AAPL", "微软": "MSFT", "英伟达": "NVDA", "特斯拉": "TSLA",
-    "兖州煤业": "600188.SS",  
-    "中煤": "600188.SS",      # <-- 匹配项
-    "煤炭": "600188.SS"       
+    "阿里": "9988.HK", "英伟达": "NVDA", "中煤": "600188.SS", "神华": "1088.HK",
+    "兖州煤业": "600188.SS", "中石化": "600028.SS", "中石油": "601857.SS"
 })
 
 MARKET_GROUPS = {
     "🇺🇸 美股科技 (AI & Chips)": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "TSM", "ASML", "BABA", "PDD"],
+    "🇨🇳 能源/煤炭 (Coal & Oil)": ["600188.SS", "601857.SS", "1088.HK", "0883.HK", "601088.SS", "600900.SS"], # 新增能源煤炭组
     "🇺🇸 美股护城河 (Moat & Value)": ["BRK-B", "V", "MA", "COST", "MCD", "KO", "PEP", "LLY", "NVO", "UNH", "JPM", "JNJ", "PG", "XOM", "CVX", "DIS"],
-    "🇭🇰 港股核心 (High Div & Tech)": ["0700.HK", "9988.HK", "3690.HK", "0388.HK", "0941.HK", "0883.HK", "1299.HK", "0005.HK", "1088.HK"],
-    "🇨🇳 A股核心 (Core Assets)": ["600519.SS", "000858.SZ", "600900.SS", "300750.SZ", "002594.SZ", "600660.SS", "300760.SZ", "600036.SS", "601318.SS", "600188.SS"] 
+    "🇨🇳 A股核心 (Core Assets)": ["600519.SS", "000858.SZ", "600036.SS", "601318.SS", "300750.SZ", "002594.SZ", "600660.SS", "300760.SZ"] 
 }
 
 def smart_parse_symbol(user_input):
     clean = user_input.strip()
     
-    # 1. 精确匹配 (代码或已知的简称/全称)
+    # 1. 精确匹配
     if clean in NAME_TO_TICKER: return NAME_TO_TICKER[clean]
     
-    # 2. 模糊匹配 (用户输入包含某个股票名)
+    # 2. 模糊匹配 
     for name, ticker in NAME_TO_TICKER.items():
         if clean in name: 
             return ticker
 
-    # 3. 数字匹配 (处理纯数字代码)
+    # 3. 数字匹配 
     code = clean.upper()
     if code.isdigit():
         if len(code) == 6 and code.startswith('6'): return f"{code}.SS"
@@ -70,7 +69,6 @@ def smart_parse_symbol(user_input):
         if len(code) == 4: return f"{code}.HK"
         if len(code) == 5 and code.startswith('0'): return f"{code[1:]}.HK"
     
-    # 4. 默认返回原输入
     return code
 
 def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10):
@@ -100,14 +98,13 @@ def get_stock_basic_info(symbol):
     except: return None
 
 def get_peer_group_and_name(symbol):
-    target_group = MARKET_GROUPS["🇺🇸 美股科技 (AI & Chips)"]
-    group_name = "🇺🇸 美股科技 (AI & Chips)"
-    for k, v in MARKET_GROUPS.items():
-        if symbol in v: 
-            target_group = v
-            group_name = k
-            break
-    return group_name, target_group
+    # 修正逻辑：先尝试在所有 MARKET_GROUPS 中找到匹配项
+    for group_name, tickers in MARKET_GROUPS.items():
+        if symbol in tickers: 
+            return group_name, tickers
+    # 如果找不到，默认使用美股科技组作为备选
+    default_group = MARKET_GROUPS["🇺🇸 美股科技 (AI & Chips)"]
+    return "🇺🇸 美股科技 (AI & Chips)", default_group
 
 @st.cache_data(ttl=3600)
 def fetch_main_stock_data(symbol):
@@ -254,7 +251,7 @@ if mode == "A. 全球猎手 (批量)":
 else:
     # --- Mode B (核心透视) - 阶段加载核心 ---
     with st.sidebar:
-        st.info("💡 示例: NVDA, 贵州茅台, 600188, 腾讯")
+        st.info("💡 示例: NVDA, 贵州茅台, 中煤, 600188")
         raw_input = st.text_input("分析对象:", "NVDA").strip() # <-- 默认值改回 NVDA
         symbol = smart_parse_symbol(raw_input)
     
