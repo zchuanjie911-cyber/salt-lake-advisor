@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 # ==========================================
 # 0. 页面配置
 # ==========================================
-st.set_page_config(page_title="全球价值猎手 v3.4 (DCF估值版)", page_icon="🦁", layout="wide")
+st.set_page_config(page_title="全球价值猎手 v3.4", page_icon="🦁", layout="wide")
 
 st.markdown("""
 <style>
@@ -58,37 +58,12 @@ MARKET_GROUPS = {
 # 2. DCF 引擎与数据获取
 # ==========================================
 def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10):
-    """
-    简易两阶段DCF计算器
-    """
+    """简易两阶段DCF计算器"""
     if fcf <= 0: return 0
     
-    # 阶段1: 高速增长期 (10年)
+    # 阶段1: 高速增长期
     future_cash_flows = []
     for i in range(1, years + 1):
         cash = fcf * ((1 + growth_rate) ** i)
         discounted_cash = cash / ((1 + discount_rate) ** i)
-        future_cash_flows.append(discounted_cash)
-    
-    sum_stage1 = sum(future_cash_flows)
-    
-    # 阶段2: 永续年金
-    final_year_cash = fcf * ((1 + growth_rate) ** years)
-    terminal_value = final_year_cash * (1 + terminal_rate) / (discount_rate - terminal_rate)
-    discounted_terminal_value = terminal_value / ((1 + discount_rate) ** years)
-    
-    return sum_stage1 + discounted_terminal_value
-
-@st.cache_data(ttl=3600)
-def fetch_financials(group_name, discount_rate_input, safety_margin_input):
-    tickers = MARKET_GROUPS[group_name]
-    data_list = []
-    
-    # 汇率修正补丁
-    ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "BIDU": 7.25, "JD": 7.25, "TSM": 32.5}
-    
-    # 行业默认增长率假设 (当读取不到数据时使用)
-    DEFAULT_GROWTH = {
-        "🇺🇸 美股科技 (AI & Chips)": 0.12, # 科技股给12%
-        "🇺🇸 美股护城河 (Moat & Value)": 0.06, # 价值股给6%
-        "
+        future_cash_flows.append(discounted
