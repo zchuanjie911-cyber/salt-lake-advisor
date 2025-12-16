@@ -1,4 +1,44 @@
 import streamlit as st
+import tushare as ts
+import pandas as pd
+
+# --- 安全获取 Token ---
+# 检查 Token 是否存在于 Secrets 中，如果不存在，则赋值为 None
+TUSHARE_TOKEN = st.secrets.get("TUSHARE_TOKEN") 
+
+# --- 初始化 Tushare 客户端 ---
+pro = None
+if TUSHARE_TOKEN:
+    try:
+        pro = ts.pro_api(TUSHARE_TOKEN)
+        # 仅在侧边栏或不显眼处显示连接成功，避免干扰主界面
+        st.sidebar.success("Tushare 连接成功！")
+    except Exception as e:
+        st.sidebar.error("Tushare Token 无效或连接失败。请检查 Secrets。")
+else:
+    st.sidebar.warning("Tushare Token 未设置，国内数据可能受限。")
+
+# --- 示例：使用 Tushare 数据 ---
+@st.cache_data(ttl=3600)
+def get_tushare_data(ts_code):
+    if pro is None:
+        return pd.DataFrame(), "Tushare服务不可用"
+
+    try:
+        # 示例：获取 A 股日线行情数据
+        df = pro.daily(ts_code=ts_code, start_date='20200101', end_date='20241231')
+        return df, "Tushare数据成功获取"
+    except Exception as e:
+        return pd.DataFrame(), f"Tushare拉取数据失败: {e}"
+
+# # 示例调用
+# if st.button('测试获取茅台数据'):
+#     # Tushare 使用 TS 代码，例如 600519.SH
+#     df, status = get_tushare_data('600519.SH')
+#     st.write(status)
+#     st.dataframe(df.head())
+
+import streamlit as st
 import pandas as pd
 import yfinance as yf
 # try:
@@ -411,3 +451,4 @@ else:
                  st.info("该股票不在预设的同行分析组中，无法进行行业地位对比分析。")
 
         else: st.error(f"❌ 核心数据获取失败。请检查股票代码 `{symbol}` 是否正确。")
+
