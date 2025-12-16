@@ -8,15 +8,7 @@ import plotly.graph_objects as go
 # 0. 页面配置
 # ==========================================
 st.set_page_config(page_title="全球价值投资超级终端 v5.0", page_icon="🦁", layout="wide")
-
-st.markdown("""
-<style>
-    .stApp {background-color: #f8f9fa;}
-    div[data-testid="stDataFrame"] {font-size: 14px;}
-    .big-font {font-size:20px !important; font-weight: bold;}
-    div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}
-</style>
-""", unsafe_allow_html=True)
+st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # ==========================================
 # 1. 全局数据字典
@@ -57,18 +49,16 @@ def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10)
 
 @st.cache_data(ttl=3600)
 def fetch_batch_data(ticker_list, discount_rate):
-    """批量获取数据 (用于猎手模式)"""
+    """批量获取数据"""
     data = []
     ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "TSM": 32.5}
     progress = st.progress(0)
-    
     for i, symbol in enumerate(ticker_list):
         progress.progress((i + 1) / len(ticker_list))
         try:
             stock = yf.Ticker(symbol)
             info = stock.info
             cn_name = STOCK_MAP.get(symbol, info.get('shortName', symbol))
-            
             mkt_cap = info.get('marketCap', 0)
             price = info.get('currentPrice', info.get('regularMarketPrice', 0))
             roe = info.get('returnOnEquity', 0) or 0
@@ -88,40 +78,4 @@ def fetch_batch_data(ticker_list, discount_rate):
             
             data.append({
                 "代码": symbol, "名称": cn_name, "现价": price, "潜在涨幅%": round(upside*100, 2),
-                "ROE%": round(roe*100, 2), "FCF收益率%": round((fcf_usd/mkt_cap)*100, 2) if mkt_cap>0 else 0,
-                "DCF估值": round(price*(1+upside), 2)
-            })
-        except: continue
-    progress.empty()
-    return pd.DataFrame(data)
-
-@st.cache_data(ttl=3600)
-def fetch_deep_data(ticker):
-    """获取深度数据 (用于审计模式)"""
-    try:
-        stock = yf.Ticker(ticker)
-        inc = stock.income_stmt
-        bal = stock.balance_sheet
-        cf = stock.cashflow
-        info = stock.info
-        
-        years = inc.columns[:4]
-        res = []
-        for d in years:
-            res.append({
-                "年份": d.strftime("%Y"),
-                "营收": inc.loc['Total Revenue', d] if 'Total Revenue' in inc.index else 0,
-                "净利润": inc.loc['Net Income', d] if 'Net Income' in inc.index else 0,
-                "应收": bal.loc['Receivables', d] if 'Receivables' in bal.index else 0,
-                "存货": bal.loc['Inventory', d] if 'Inventory' in bal.index else 0,
-                "经营现金流": cf.loc['Operating Cash Flow', d] if 'Operating Cash Flow' in cf.index else 0
-            })
-        return pd.DataFrame(res).iloc[::-1], info
-    except: return pd.DataFrame(), {}
-
-# ==========================================
-# 3. 侧边栏导航
-# ==========================================
-with st.sidebar:
-    st.header("🦁 超级终端 v5.0")
-    app
+                "ROE%": round(roe*100, 2), "FCF收益率%": round((fcf_usd/mkt_cap)*100, 2) if mkt
