@@ -449,4 +449,34 @@ if __name__ == '__main__':
                     # 利润真实性
                     with f2:
                         fig_cash = make_subplots(specs=[[{"secondary_y": True}]])
-                        fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_
+                        fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['净利润'], name="净利润", marker_color='#a5d6a7'), secondary_y=False)
+                        fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['现金流'], name="现金流", marker_color='#2e7d32'), secondary_y=False)
+                        fig_cash.add_trace(go.Scatter(x=df_hist['年份'], y=df_hist['净现比'], name="净现比", mode='lines+markers', line=dict(color='gold', width=3, dash='dot')), secondary_y=True)
+                        fig_cash.update_layout(title="图 2.2 净利润与现金流对比 (真实性)", height=350, margin=dict(t=30, b=10))
+                        fig_cash.add_hline(y=1.0, line_dash="dash", line_color="gray", secondary_y=True)
+                        st.plotly_chart(fig_cash, use_container_width=True)
+                        last_r = df_hist['净现比'].iloc[-1]
+                        if last_r < 0.8: st.error(f"🚨 结论：利润真实性低 ({last_r:.2f})")
+                        else: st.success(f"💎 结论：利润真实性高 ({last_r:.2f})")
+                else: st.warning("⚠️ 暂无历史财务数据。")
+                
+                st.markdown("---")
+    
+                # 3. 行业地位 (V3.4 风格)
+                st.subheader("3. 行业地位：对比黄金象限")
+                if group_name:
+                    df_peers = st.session_state.peers_data_cache.get(group_name)
+    
+                    if df_peers is not None:
+                        fig_pos = px.scatter(df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称", text="名称", 
+                                             title=f"图 3.1 【{group_name}】黄金象限：高毛利+高增速", height=450)
+                        fig_pos.update_traces(textposition='top center')
+                        st.plotly_chart(fig_pos, use_container_width=True)
+                    else:
+                        st.warning(f"同行对比数据尚未加载。点击下方按钮进行多线程加载。")
+                        if st.button(f'🏎️ 立即加载【{group_name}】同行数据'):
+                            load_peers_data(group_name, target_group)
+                else:
+                     st.info("该股票不在预设的同行分析组中，无法进行行业地位对比分析。")
+    
+            else: st.error(f"❌ 核心数据获取失败。请检查股票代码 `{symbol}` 是否正确。")
