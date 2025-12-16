@@ -184,11 +184,17 @@ with c3:
         st.metric("🔥 赚钱机器", best_biz["名称"], f"ROE {best_biz['ROE%']}%")
 
 # --- 列表 ---
-st.subheader("📋 深度估值表")
-if not df.empty:
-    st.dataframe(
-        df.drop(columns=["raw_mkt_cap"]).style
-        .background_gradient(subset=["FCF收益率%"], cmap="Greens") # 越绿越便宜
-        .background_gradient(subset=["回本年限(P/FCF)"], cmap="RdYlGn_r") # 越红越贵，越绿越便宜(反转色阶)
-        .background_gradient(subset=["ROE%"], cmap="Reds")      # 越红越强
-        .
+    st.subheader("📋 深度估值表")
+    if not df.empty:
+        st.dataframe(
+            df.drop(columns=["raw_mkt_cap"]).style
+            .background_gradient(subset=["FCF收益率%"], cmap="Greens") 
+            .background_gradient(subset=["回本年限(P/FCF)"], cmap="RdYlGn_r") 
+            .background_gradient(subset=["ROE%"], cmap="Reds")
+            .format({"现价": "{:.2f}"}),
+            use_container_width=True,
+            height=400,
+            hide_index=True
+        )  # <--- ⚠️ 你的代码里可能缺少这个闭合括号
+    else:
+        st.warning("🧹 无符合条件股票。")
