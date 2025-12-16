@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 # ==========================================
 # 0. 页面配置与初始化
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v17.2 (中文名称版)", page_icon="🌎", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v18.0 (四大板块回归)", page_icon="🌎", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # 初始化会话状态
@@ -22,12 +22,19 @@ if 'current_peer_group' not in st.session_state:
 # 1. 数据字典与智能识别 
 # ==========================================
 STOCK_MAP = {
-    # 保持核心白名单，用于智能识别和同行分组
-    "AAPL": "苹果", "MSFT": "微软", "GOOG": "谷歌", "NVDA": "英伟达", "TSM": "台积电",
-    "0700.HK": "腾讯控股", "600519.SS": "贵州茅台", "600188.SS": "中煤能源", "601318.SS": "中国平安",
-    "601088.SS": "中国神华(A)", "0883.HK": "中国海洋石油", "0941.HK": "中国移动",
-    "600036.SS": "招商银行", "600887.SS": "伊利股份", "600585.SS": "海螺水泥",
-    "BRK-B": "伯克希尔哈撒韦", "COST": "开市客", "JPM": "摩根大通",
+    # 核心美股
+    "AAPL": "苹果", "MSFT": "微软", "GOOG": "谷歌", "AMZN": "亚马逊", "META": "Meta", "TSLA": "特斯拉", "NVDA": "英伟达", "AMD": "超威半导体",
+    "TSM": "台积电", "ASML": "阿斯麦", "BABA": "阿里巴巴(美)", "PDD": "拼多多",
+    # 核心护城河
+    "BRK-B": "伯克希尔哈撒韦", "V": "威士", "MA": "万事达", "COST": "开市客", "JPM": "摩根大通", "JNJ": "强生", "PG": "宝洁", "XOM": "埃克森美孚", 
+    "KO": "可口可乐", "PEP": "百事", 
+    # 核心港股
+    "0700.HK": "腾讯控股", "9988.HK": "阿里巴巴(港)", "3690.HK": "美团", "0388.HK": "香港交易所", "0941.HK": "中国移动", "0883.HK": "中国海洋石油",
+    "1810.HK": "小米集团", "1024.HK": "快手",
+    # 核心A股
+    "600519.SS": "贵州茅台", "000858.SZ": "五粮液", "600900.SS": "长江电力", "300750.SZ": "宁德时代", "600036.SS": "招商银行", 
+    "601318.SS": "中国平安", "600188.SS": "中煤能源", "601088.SS": "中国神华(A)", "600887.SS": "伊利股份", "600585.SS": "海螺水泥",
+    "002714.SZ": "牧原股份", "600030.SS": "中信证券"
 }
 
 NAME_TO_TICKER = {v: k for k, v in STOCK_MAP.items()}
@@ -36,27 +43,24 @@ NAME_TO_TICKER.update({
     "苹果": "AAPL", "微软": "MSFT", "英伟达": "NVDA", "招行": "600036.SS", "伊利": "600887.SS"
 })
 
+# === 核心修改: 四大板块 ===
 MARKET_GROUPS = {
-    "🇺🇸 美股科技 (AI & Chips)": ["AAPL", "MSFT", "GOOG", "NVDA", "TSM"],
-    "🇨🇳 A股消费/制造": ["600519.SS", "600887.SS", "600585.SS"], 
-    "🇨🇳 A股金融/公用": ["600036.SS", "601318.SS", "600188.SS"], 
-    "🇨🇳 能源/资源": ["600188.SS", "601088.SS", "0883.HK"], 
-    "🇺🇸 核心价值股": ["BRK-B", "COST", "JPM"],
-    "🇭🇰 港股核心 (TMT/消费)": ["0700.HK", "0941.HK"]
+    "🇺🇸 美股科技 (Tech)": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "TSM", "ASML", "BABA", "PDD"],
+    "🇺🇸 美股护城河 (Value)": ["BRK-B", "V", "MA", "COST", "JPM", "JNJ", "PG", "XOM", "KO", "PEP"],
+    "🇭🇰 港股核心 (Core)": ["0700.HK", "9988.HK", "3690.HK", "0388.HK", "0941.HK", "0883.HK", "1810.HK", "1024.HK"],
+    "🇨🇳 A股核心 (Core)": ["600519.SS", "000858.SZ", "600900.SS", "300750.SZ", "600036.SS", "601318.SS", "600188.SS", "601088.SS", "600887.SS", "600585.SS", "600030.SS", "002714.SZ"]
 }
+# ========================
 
 def smart_parse_symbol(user_input):
     clean = user_input.strip()
     
-    # 1. 精确匹配
     if clean in NAME_TO_TICKER: return NAME_TO_TICKER[clean]
     
-    # 2. 模糊匹配 
     for name, ticker in NAME_TO_TICKER.items():
         if clean in name: 
             return ticker
 
-    # 3. 数字匹配 
     code = clean.upper()
     if code.isdigit():
         if len(code) == 6 and code.startswith('6'): return f"{code}.SS"
@@ -64,7 +68,6 @@ def smart_parse_symbol(user_input):
         if len(code) == 4: return f"{code}.HK"
         if len(code) == 5 and code.startswith('0'): return f"{code[1:]}.HK"
     
-    # 4. 全球查询 - 返回原始代码
     return code
 
 def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10):
@@ -79,18 +82,12 @@ def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10)
     return sum(future_flows) + discounted_terminal
 
 # ==========================================
-# 2. 数据获取 (核心改动在这里)
+# 2. 数据获取 (保持稳定)
 # ==========================================
 def get_stock_basic_info(symbol):
-    """
-    更新：同行信息获取函数。
-    - 优先使用 STOCK_MAP 中的中文名。
-    - 否则使用 yfinance 返回的 shortName。
-    """
     try:
         t = yf.Ticker(symbol)
         i = t.info
-        # 核心修改：使用STOCK_MAP中的中文名，如果不在，则使用 shortName
         name = STOCK_MAP.get(symbol, i.get('shortName', symbol)) 
         return {
             "名称": name,
@@ -101,7 +98,6 @@ def get_stock_basic_info(symbol):
     except: return None
 
 def get_peer_group_and_name(symbol):
-    """尝试匹配预设的同行分组"""
     for group_name, tickers in MARKET_GROUPS.items():
         if symbol in tickers: 
             return group_name, tickers
@@ -109,7 +105,6 @@ def get_peer_group_and_name(symbol):
 
 @st.cache_data(ttl=3600)
 def fetch_main_stock_data(symbol):
-    """只获取主角的财务和商业模式数据 (快速) - 终极容错"""
     info = {}
     biz = {}
     df_hist = pd.DataFrame()
@@ -175,6 +170,7 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
     ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "TSM": 32.5}
     def fetch_one(raw_sym):
         symbol = smart_parse_symbol(raw_sym)
+        # 仅处理预设股票池，保证数据质量
         if symbol not in STOCK_MAP and not symbol.endswith(('.SS', '.SZ', '.HK')):
             return None
             
@@ -213,7 +209,7 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
 # 3. 核心界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("🌎 超级终端 v17.2")
+    st.header("🌎 超级终端 v18.0")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     st.divider()
 
@@ -224,7 +220,7 @@ if mode == "A. 全球猎手 (批量)":
         choice = st.selectbox("选择战场", options)
         if choice == "🔍 自选输入":
             st.info("💡 批量分析仅支持预设的股票池，保证数据准确性。")
-            user_txt = st.text_area("输入 (逗号隔开)", "NVDA, 腾讯, 贵州茅台")
+            user_txt = st.text_area("输入 (逗号隔开)", "NVDA, 腾讯控股, 贵州茅台")
             tickers = [x.strip() for x in user_txt.split(',') if x.strip()]
         else: tickers = MARKET_GROUPS[choice]
         dr = st.slider("折现率 (%)", 6, 15, 9)
