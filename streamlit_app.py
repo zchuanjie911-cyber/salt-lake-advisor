@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 # ==========================================
 # 0. 页面配置与初始化
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v13.1 (稳定版)", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v14.0 (极限稳定版)", page_icon="🏎️", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # 初始化会话状态 (用于存储高延迟的同行数据)
@@ -97,12 +97,14 @@ def fetch_main_stock_data(symbol):
         bal = stock.balance_sheet
         cf = stock.cashflow
         
+        # 商业模式
         biz = {
             "ROE": info.get('returnOnEquity', 0),
             "毛利率": info.get('grossMargins', 0),
             "净利率": info.get('profitMargins', 0)
         }
         
+        # 历史趋势
         history = []
         if not inc.empty:
             years = inc.columns[:5]
@@ -113,19 +115,20 @@ def fetch_main_stock_data(symbol):
                 ocf = cf.loc['Operating Cash Flow', d] if 'Operating Cash Flow' in cf.index else 0
                 
                 history.append({
-                    "年份": d.strftime("%Y"),
-                    "营收": rev,
-                    "应收": rec,
-                    "净利润": ni,
-                    "现金流": ocf,
+                    "年份": d.strftime("%Y"), "营收": rev, "应收": rec, "净利润": ni, "现金流": ocf,
                     "应收占比%": (rec / rev) * 100 if rev > 0 else 0,
                     "净现比": (ocf / ni) if ni > 0 else 0
                 })
         
-        return info, biz, pd.DataFrame(history).iloc[::-1]
-    except: return None, None, pd.DataFrame()
+        # 错误隔离：如果关键数据缺失，也视为失败
+        if not info or biz['ROE'] is None:
+             raise ValueError("Essential financial data missing.")
 
-# 【修复 st.experimental_rerun -> st.rerun】
+        return info, biz, pd.DataFrame(history).iloc[::-1]
+    except Exception as e: 
+        # 返回 None 表示获取失败
+        return None, None, None
+
 def load_peers_data(group_name, target_group):
     """加载同行数据，并存入缓存"""
     safe_group = target_group[:10]
@@ -140,7 +143,6 @@ def load_peers_data(group_name, target_group):
         st.session_state.peers_data_cache[group_name] = pd.DataFrame(peers_data)
         st.session_state.current_peer_group = group_name
     
-    # !!! 关键修复 !!!
     st.rerun() 
 
 @st.cache_data(ttl=3600)
@@ -184,7 +186,7 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
 # 3. 核心界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("⚡ 超级终端 v13.1")
+    st.header("⚡ 超级终端 v14.0")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     st.divider()
 
@@ -220,8 +222,8 @@ if mode == "A. 全球猎手 (批量)":
             st.plotly_chart(fig_dumb, use_container_width=True)
 
             c1, c2 = st.columns(2)
-            with c1: st.plotly_chart(px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", color_continuous_scale="RdYlGn", title="2. 潜能排行榜"), use_container_width=True)
-            with c2: st.plotly_chart(px.scatter(df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%", text="名称", title="3. 黄金象限", color_continuous_scale="RdYlGn"), use_container_width=True)
+            with c1: st.plotly_chart(px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", color_continuous_scale="RdYlGn", title="2. 潜能排行榜 (按涨幅排序)"), use_container_width=True)
+            with c2: st.plotly_chart(px.scatter(df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%", text="名称", title="3. 黄金象限 (质优价廉)", color_continuous_scale="RdYlGn"), use_container_width=True)
             
             st.dataframe(df_val.style.background_gradient(subset=["潜在涨幅%"], cmap="RdYlGn", vmin=-50, vmax=50), use_container_width=True)
         else: st.warning("未找到数据")
@@ -262,7 +264,7 @@ else:
 
             # 3. 财务体检 (即时加载)
             st.header("3. 🔎 深度财务审计")
-            if not df_hist.empty:
+            if df_hist is not None and not df_hist.empty:
                 f1, f2 = st.columns(2)
                 with f1:
                     fig_rev = make_subplots(specs=[[{"secondary_y": True}]])
@@ -285,7 +287,7 @@ else:
                     last_r = df_hist['净现比'].iloc[-1]
                     if last_r < 0.8: st.error(f"🚨 净现比 {last_r:.2f}，利润质量低！")
                     else: st.success(f"💎 净现比 {last_r:.2f}，真金白银。")
-            else: st.warning("暂无历史数据")
+            else: st.warning("暂无历史数据或数据获取失败。")
 
 
             # 2. 行业地位 (异步加载/缓存)
@@ -294,16 +296,14 @@ else:
             df_peers = st.session_state.peers_data_cache.get(group_name)
 
             if df_peers is not None:
-                # 缓存命中：直接渲染
                 fig_pos = px.scatter(df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称", text="名称", 
                                      title="行业格局 (右上角为王者)", height=450)
                 fig_pos.update_traces(textposition='top center')
                 st.plotly_chart(fig_pos, use_container_width=True)
                 st.success("✨ 数据已从缓存中加载 (秒开)")
             else:
-                # 缓存未命中：显示按钮
                 st.warning(f"同行对比数据尚未加载。点击下方按钮进行多线程加载。")
                 if st.button(f'🏎️ 立即加载【{group_name}】同行数据'):
-                    load_peers_data(group_name, target_group) # 这一步会调用 st.rerun()
+                    load_peers_data(group_name, target_group)
         
-        else: st.error("无法获取数据")
+        else: st.error("无法获取核心数据。请检查代码是否正确或该股票数据源缺失。")
