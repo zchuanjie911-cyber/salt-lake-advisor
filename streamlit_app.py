@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 # ==========================================
 # 0. 页面配置
 # ==========================================
-st.set_page_config(page_title="全球价值猎手 v3.3", page_icon="🦁", layout="wide")
+st.set_page_config(page_title="全球价值猎手 v3.4 (DCF估值版)", page_icon="🦁", layout="wide")
 
 st.markdown("""
 <style>
@@ -55,180 +55,40 @@ MARKET_GROUPS = {
 }
 
 # ==========================================
-# 2. 数据获取 (含汇率修正)
+# 2. DCF 引擎与数据获取
 # ==========================================
+def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10):
+    """
+    简易两阶段DCF计算器
+    """
+    if fcf <= 0: return 0
+    
+    # 阶段1: 高速增长期 (10年)
+    future_cash_flows = []
+    for i in range(1, years + 1):
+        cash = fcf * ((1 + growth_rate) ** i)
+        discounted_cash = cash / ((1 + discount_rate) ** i)
+        future_cash_flows.append(discounted_cash)
+    
+    sum_stage1 = sum(future_cash_flows)
+    
+    # 阶段2: 永续年金
+    final_year_cash = fcf * ((1 + growth_rate) ** years)
+    terminal_value = final_year_cash * (1 + terminal_rate) / (discount_rate - terminal_rate)
+    discounted_terminal_value = terminal_value / ((1 + discount_rate) ** years)
+    
+    return sum_stage1 + discounted_terminal_value
+
 @st.cache_data(ttl=3600)
-def fetch_financials(group_name):
+def fetch_financials(group_name, discount_rate_input, safety_margin_input):
     tickers = MARKET_GROUPS[group_name]
     data_list = []
     
     # 汇率修正补丁
-    ADR_FIX = {
-        "PDD": 7.25, 
-        "BABA": 7.25, 
-        "BIDU": 7.25, 
-        "JD": 7.25, 
-        "TSM": 32.5
-    }
-
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "BIDU": 7.25, "JD": 7.25, "TSM": 32.5}
     
-    for i, symbol in enumerate(tickers):
-        cn_name = STOCK_MAP.get(symbol, symbol)
-        status_text.text(f"🔍 正在估值: {cn_name} ({symbol})...")
-        progress_bar.progress((i + 1) / len(tickers))
-        
-        try:
-            stock = yf.Ticker(symbol)
-            info = stock.info
-            
-            # --- 基础数据 ---
-            mkt_cap = info.get('marketCap', 0)
-            price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-            
-            # --- 商业模式 ---
-            roe = info.get('returnOnEquity', 0) or 0
-            net_margin = info.get('profitMargins', 0) or 0
-            
-            # --- 现金流修正 ---
-            fcf = info.get('freeCashflow', 0)
-            # 如果没有直接的FCF数据，尝试手动计算
-            if fcf is None: 
-                op_cash = info.get('operatingCashflow', 0) or 0
-                capex = info.get('capitalExpenditures', 0) or 0 
-                # FCF = 经营现金流 + 资本开支 (注意: capex通常是负数)
-                fcf = op_cash + capex if capex < 0 else op_cash - capex
-
-            # --- 应用汇率修正 ---
-            fix_rate = ADR_FIX.get(symbol, 1.0) 
-            
-            # --- 核心估值计算 ---
-            # FCF Yield = (FCF / 市值) / 汇率
-            fcf_yield = ((fcf / mkt_cap) / fix_rate) if mkt_cap > 0 else 0
-            
-            # P/FCF 回本年限 = (市值 / FCF) * 汇率
-            p_fcf = ((mkt_cap / fcf) * fix_rate) if fcf > 0 else 0
-            
-            div_yield = info.get('dividendYield', 0) or 0
-
-            # 综合评分
-            score = (fcf_yield * 100 * 5) + (roe * 100 * 3) + (div_yield * 100 * 2)
-
-            data_list.append({
-                "代码": symbol,
-                "名称": cn_name,
-                "现价": price,
-                "ROE%": round(roe * 100, 2),
-                "净利率%": round(net_margin * 100, 2),
-                "FCF收益率%": round(fcf_yield * 100, 2),
-                "回本年限(P/FCF)": round(p_fcf, 1),
-                "股息率%": round(div_yield * 100, 2),
-                "综合评分": round(score, 1),
-                "raw_mkt_cap": mkt_cap
-            })
-        except Exception:
-            continue
-            
-    progress_bar.empty()
-    status_text.empty()
-    return pd.DataFrame(data_list)
-
-# ==========================================
-# 3. 侧边栏
-# ==========================================
-with st.sidebar:
-    st.header("🦁 猎手参数 (终极版)")
-    group_choice = st.selectbox("选择狩猎战场", list(MARKET_GROUPS.keys()))
-    
-    st.divider()
-    st.subheader("🛠️ 筛选漏斗")
-    min_roe = st.slider("最低 ROE (%)", 0, 50, 15)
-    min_net_margin = st.slider("最低 净利率 (%)", 0, 60, 10)
-    min_fcf_yield = st.slider("最低 FCF收益率 (%)", -2.0, 10.0, 2.5)
-    
-    st.info("✅ 汇率补丁已激活 (PDD/BABA/TSM 数据已修正)")
-
-# ==========================================
-# 4. 主界面
-# ==========================================
-st.title(f"🌍 全球价值猎手: {group_choice}")
-st.caption("核心视角：【商业模式】有多性感 vs 【现在股价】有多划算")
-
-raw_df = fetch_financials(group_choice)
-
-if raw_df.empty:
-    st.error("⚠️ 数据获取失败，请重试")
-    st.stop()
-
-# 筛选与排序
-df = raw_df[
-    (raw_df["ROE%"] >= min_roe) &
-    (raw_df["净利率%"] >= min_net_margin) &
-    (raw_df["FCF收益率%"] >= min_fcf_yield)
-].sort_values(by="综合评分", ascending=False)
-
-# KPI
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.metric("🎯 幸存名单", f"{len(df)} / {len(raw_df)}")
-with c2:
-    if not df.empty:
-        valid_p_fcf = df[df["回本年限(P/FCF)"] > 0]
-        if not valid_p_fcf.empty:
-            best_val = valid_p_fcf.sort_values("回本年限(P/FCF)").iloc[0]
-            st.metric("💰 性价比之王", best_val["名称"], f"{best_val['回本年限(P/FCF)']}年")
-        else: st.metric("💰 性价比之王", "无")
-with c3:
-    if not df.empty:
-        best_biz = df.sort_values("ROE%", ascending=False).iloc[0]
-        st.metric("🔥 赚钱机器", best_biz["名称"], f"ROE {best_biz['ROE%']}%")
-
-# 列表
-st.subheader("📋 深度估值审计表")
-if not df.empty:
-    st.dataframe(
-        df.drop(columns=["raw_mkt_cap"]).style
-        .background_gradient(subset=["FCF收益率%"], cmap="Greens")
-        .background_gradient(subset=["回本年限(P/FCF)"], cmap="RdYlGn_r")
-        .background_gradient(subset=["ROE%"], cmap="Reds")
-        .format({"现价": "{:.2f}"}),
-        use_container_width=True, height=400, hide_index=True
-    )
-else:
-    st.warning("🧹 暂无符合条件的股票。")
-
-# 可视化
-st.divider()
-if not df.empty:
-    st.subheader("⚖️ 核心对决：股价 vs (商业价值+现金流)")
-    col1, col2 = st.columns([3, 2])
-    
-    with col1:
-        fig1 = px.scatter(
-            df, x="ROE%", y="FCF收益率%", size="净利率%", color="回本年限(P/FCF)",
-            color_continuous_scale="RdYlGn_r", hover_name="名称", text="名称",
-            title="⬇️左下(贵且差) ⻠ ↗️右上(便宜且好)",
-            labels={"ROE%": "商业价值 (ROE) →", "FCF收益率%": "现金回报率 (Yield) ↑"},
-            height=550
-        )
-        fig1.add_hline(y=4.0, line_dash="dot", line_color="green", opacity=0.6)
-        fig1.add_vline(x=15.0, line_dash="dot", line_color="red", opacity=0.6)
-        fig1.add_shape(type="rect", x0=15, y0=4, x1=df["ROE%"].max()*1.05, y1=df["FCF收益率%"].max()*1.05,
-            line=dict(color="rgba(0,0,0,0)"), fillcolor="rgba(0,255,0,0.1)", layer="below")
-        fig1.update_traces(textposition='top center')
-        st.plotly_chart(fig1, use_container_width=True)
-
-    with col2:
-        st.subheader("⏳ 回本年限排行榜")
-        chart_df = df[(df["回本年限(P/FCF)"] > 0) & (df["回本年限(P/FCF)"] < 80)].sort_values("回本年限(P/FCF)").head(15)
-        fig2 = px.bar(
-            chart_df, x="回本年限(P/FCF)", y="名称", orientation='h', text="回本年限(P/FCF)",
-            color="回本年限(P/FCF)", color_continuous_scale="RdYlGn_r",
-            title="越短越便宜"
-        )
-        fig2.update_layout(xaxis_title="", yaxis_title="", yaxis={'categoryorder':'total descending'}, height=550)
-        fig2.update_traces(texttemplate='%{text:.1f}年', textposition='outside')
-        st.plotly_chart(fig2, use_container_width=True)
-
-    st.info("💡 **提示**: 气泡颜色越绿，代表回本越快（便宜）；位置越靠右上，代表生意越好且价格越低。")
+    # 行业默认增长率假设 (当读取不到数据时使用)
+    DEFAULT_GROWTH = {
+        "🇺🇸 美股科技 (AI & Chips)": 0.12, # 科技股给12%
+        "🇺🇸 美股护城河 (Moat & Value)": 0.06, # 价值股给6%
+        "
