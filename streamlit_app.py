@@ -33,27 +33,48 @@ def get_deep_financials(ticker):
         info = stock.info
         
         # 提取关键字段 (最近4年)
-        years = income.columns[:4] # 取最近4列
+        years = income.columns[:4] 
         
         data = []
         for date in years:
             year_str = date.strftime("%Y")
             
             # 1. 营收与利润
-            rev = income.loc['Total Revenue', date] if 'Total Revenue' in income.index else 0
-            net_income = income.loc['Net Income', date] if 'Net Income' in income.index else 0
+            if 'Total Revenue' in income.index:
+                rev = income.loc['Total Revenue', date]
+            else:
+                rev = 0
+                
+            if 'Net Income' in income.index:
+                net_income = income.loc['Net Income', date]
+            else:
+                net_income = 0
             
             # 2. 资产负债 (应收 & 库存)
-            # 注意：不同行业科目名称可能不同，这里做简单容错
-            receivables = balance.loc['Receivables', date] if 'Receivables' in balance.index else \
-                          (balance.loc['Net Receivables', date] if 'Net Receivables' in balance.index else 0)
+            if 'Receivables' in balance.index:
+                receivables = balance.loc['Receivables', date]
+            elif 'Net Receivables' in balance.index:
+                receivables = balance.loc['Net Receivables', date]
+            else:
+                receivables = 0
             
-            inventory = balance.loc['Inventory', date] if 'Inventory' in balance.index else 0
+            if 'Inventory' in balance.index:
+                inventory = balance.loc['Inventory', date]
+            else:
+                inventory = 0
             
-            # 3. 现金流
-            # FCF = 经营现金流 - 资本开支 (CAPEX通常为负，所以是 + )
-            op_cash = cashflow.loc['Operating Cash Flow', date] if 'Operating Cash Flow' in cashflow.index else 0
-            capex = cashflow.loc['Capital Expenditure', date] if 'Capital Expenditure' in cashflow.index else 0
+            # 3. 现金流 (FCF = 经营现金流 + 资本开支)
+            # 注意：CAPEX通常为负数，所以是用加号
+            if 'Operating Cash Flow' in cashflow.index:
+                op_cash = cashflow.loc['Operating Cash Flow', date]
+            else:
+                op_cash = 0
+                
+            if 'Capital Expenditure' in cashflow.index:
+                capex = cashflow.loc['Capital Expenditure', date]
+            else:
+                capex = 0
+            
             fcf = op_cash + capex 
 
             data.append({
@@ -66,7 +87,7 @@ def get_deep_financials(ticker):
                 "自由现金流": fcf
             })
         
-        # 翻转顺序，让时间从左到右
+        # 翻转顺序，让时间从左到右 (2020 -> 2023)
         df_fin = pd.DataFrame(data).iloc[::-1]
         return df_fin, info
         
@@ -117,7 +138,7 @@ st.title(f"📊 深度审计报告: {ticker_input}")
 df_fin, info = get_deep_financials(ticker_input)
 
 if df_fin.empty:
-    st.error("⚠️ 无法获取详细财务数据。请检查代码或该股票数据源缺失（如银行股可能没有存货数据）。")
+    st.error("⚠️ 无法获取详细财务数据。请检查代码或该股票数据源缺失。")
     st.stop()
 
 # 基础信息栏
@@ -127,7 +148,7 @@ currency = info.get('currency', 'USD')
 st.markdown(f"**当前价格**: {price} {currency} | **市值**: {mkt_cap/1e9:.2f} B")
 
 # === 创建四个深度分析板块 ===
-tab1, tab2, tab3, tab4 = st.tabs(["🛡️ 1. 商业模式与护城河", "💣 2. 财务雷达 (核心)", "💰 3. 现金流估值", "⚔️ 4. 同业对比"])
+tab1, tab2, tab3, tab4 = st.tabs(["🛡️ 1. 商业模式", "💣 2. 财务雷达", "💰 3. 现金流估值", "⚔️ 4. 同业对比"])
 
 # --- Tab 1: 商业模式 ---
 with tab1:
@@ -139,10 +160,9 @@ with tab1:
     net_margin = info.get('profitMargins', 0)
     
     with col1:
-        st.metric("ROE (净资产收益率)", f"{roe*100:.2f}%", help="巴菲特最看重的指标，>15%为优秀")
+        st.metric("ROE (净资产收益率)", f"{roe*100:.2f}%")
         fig_roe = go.Figure(go.Indicator(
-            mode = "gauge+number", value = roe*100,
-            title = {'text': "ROE 强度"},
+            mode = "gauge+number", value = roe*100, title = {'text': "ROE 强度"},
             gauge = {'axis': {'range': [0, 50]}, 'bar': {'color': "#0f52ba"},
                      'steps': [{'range': [0, 15], 'color': "lightgray"}, {'range': [15, 50], 'color': "#e6f2ff"}]}
         ))
@@ -150,10 +170,9 @@ with tab1:
         st.plotly_chart(fig_roe, use_container_width=True)
         
     with col2:
-        st.metric("毛利率 (Gross Margin)", f"{gross_margin*100:.2f}%", help="体现产品定价权和竞争壁垒")
+        st.metric("毛利率 (Gross Margin)", f"{gross_margin*100:.2f}%")
         fig_gm = go.Figure(go.Indicator(
-            mode = "gauge+number", value = gross_margin*100,
-            title = {'text': "毛利率壁垒"},
+            mode = "gauge+number", value = gross_margin*100, title = {'text': "毛利率壁垒"},
             gauge = {'axis': {'range': [0, 100]}, 'bar': {'color': "#2E8B57"},
                      'steps': [{'range': [0, 40], 'color': "lightgray"}]}
         ))
@@ -161,7 +180,7 @@ with tab1:
         st.plotly_chart(fig_gm, use_container_width=True)
 
     with col3:
-        st.metric("净利率 (Net Margin)", f"{net_margin*100:.2f}%", help="最终落袋的利润率")
+        st.metric("净利率 (Net Margin)", f"{net_margin*100:.2f}%")
         st.info(f"""
         **分析师点评**:
         * **ROE**: {roe*100:.1f}% -> {"🌟 顶级生意" if roe > 0.2 else "✅ 良好生意" if roe > 0.15 else "⚠️ 普通生意"}
@@ -172,11 +191,75 @@ with tab1:
 with tab2:
     st.markdown("### 🕵️‍♂️ 财务排雷：识破虚假繁荣")
     
-    # 数据归一化处理（为了画图好看，变成增长率或相对值）
-    
     # 1. 营收质量分析：应收 vs 营收
     st.subheader("1. 卖货收得到钱吗？(应收账款 vs 营收)")
     c1, c2 = st.columns([3, 1])
     with c1:
         fig_rec = go.Figure()
-        fig_rec.add_trace(go.Bar(x=df_fin['年份'], y=
+        fig_rec.add_trace(go.Bar(
+            x=df_fin['年份'], y=df_fin['营收'], 
+            name='总营收', marker_color='lightblue'
+        ))
+        fig_rec.add_trace(go.Bar(
+            x=df_fin['年份'], y=df_fin['应收账款'], 
+            name='应收账款', marker_color='orange'
+        ))
+        fig_rec.update_layout(barmode='group', title="营收 vs 应收 (橙色不应增长过快)")
+        st.plotly_chart(fig_rec, use_container_width=True)
+    with c2:
+        st.warning("**警惕**: 若【应收账款】增速 > 【营收】增速，说明可能在压货赊销。")
+
+    st.divider()
+
+    # 2. 库存风险分析：库存 vs 营收
+    st.subheader("2. 货卖得出去吗？(存货 vs 营收)")
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        fig_inv = go.Figure()
+        fig_inv.add_trace(go.Scatter(
+            x=df_fin['年份'], y=df_fin['营收'], 
+            name='总营收', line=dict(color='blue', width=3)
+        ))
+        fig_inv.add_trace(go.Scatter(
+            x=df_fin['年份'], y=df_fin['存货'], 
+            name='存货', line=dict(color='red', width=3, dash='dot')
+        ))
+        fig_inv.update_layout(title="营收(蓝) vs 存货(红)")
+        st.plotly_chart(fig_inv, use_container_width=True)
+    with c2:
+        st.warning("**警惕**: 若【红线】飙升而【蓝线】走平，说明产品滞销。")
+
+    st.divider()
+
+    # 3. 盈利含金量：净利润 vs 现金流
+    st.subheader("3. 赚的是真钱吗？(净利润 vs 经营现金流)")
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        fig_cash = go.Figure()
+        fig_cash.add_trace(go.Bar(
+            x=df_fin['年份'], y=df_fin['净利润'], 
+            name='净利润', marker_color='#90EE90'
+        ))
+        fig_cash.add_trace(go.Bar(
+            x=df_fin['年份'], y=df_fin['经营现金流'], 
+            name='经营现金流', marker_color='#006400'
+        ))
+        fig_cash.update_layout(barmode='overlay', title="浅绿=纸面富贵 | 深绿=真金白银")
+        st.plotly_chart(fig_cash, use_container_width=True)
+    with c2:
+        st.success("**优质**: 深绿柱子(现金流) 高于 浅绿柱子(利润) 为最佳。")
+
+# --- Tab 3: 估值 ---
+with tab3:
+    st.markdown("### 💰 DCF 绝对估值模型")
+    
+    last_fcf = df_fin['自由现金流'].iloc[-1]
+    
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.metric("最新年度 FCF", f"{last_fcf/1e9:.2f} B")
+        st.metric("设定增长率", f"{growth_rate_manual}%")
+        st.metric("设定折现率", f"{discount_rate}%")
+        
+    with col_b:
+        intrinsic
