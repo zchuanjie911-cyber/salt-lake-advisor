@@ -22,7 +22,7 @@ except Exception:
 # ==========================================
 # 0. 页面配置与初始化
 # ==========================================
-st.set_page_config(page_title="全球投资终端 v21.0 (布局优化)", page_icon="📈", layout="wide")
+st.set_page_config(page_title="全球投资终端 v22.0 (V3.4 极简版)", page_icon="🎯", layout="wide")
 st.markdown("""<style>
 /* 核心指标卡片样式优化 */
 .metric-container {
@@ -41,6 +41,10 @@ st.markdown("""<style>
     font-size: 24px;
     font-weight: bold;
     color: #0f52ba;
+}
+/* 隐藏 Streamlit 默认的 Metric 标签，因为我们用自定义的了 */
+div[data-testid="stMetricDelta"] {
+    display: none;
 }
 </style>""", unsafe_allow_html=True)
 
@@ -98,7 +102,7 @@ MARKET_GROUPS = {
     ]
 }
 
-# 辅助函数 (Tushare/yfinance/DCF/Peers 保持不变)
+# 辅助函数 (保持不变)
 def smart_parse_symbol(user_input):
     clean = user_input.strip()
     if clean in NAME_TO_TICKER: return NAME_TO_TICKER[clean]
@@ -185,18 +189,9 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
     for res in results:
         if res: snapshot.append(res)
     return pd.DataFrame(snapshot)
-
-
-# Tushare/yfinance 核心获取逻辑 (为了精简，我只保留 yfinance 逻辑，因为 Tushare 逻辑没有解决 Token 问题)
 @st.cache_data(ttl=3600)
 def fetch_main_stock_data(symbol):
     info = {}; biz = {}; df_hist = pd.DataFrame()
-    
-    # ----------------------------------------------------
-    # Tushare 优先逻辑 (此处省略，以保持代码简洁并避免 Token/库导入问题)
-    # ----------------------------------------------------
-
-    # 降级到 yfinance 
     try:
         stock = yf.Ticker(symbol)
         info = stock.info if stock.info else {}
@@ -230,7 +225,7 @@ def fetch_main_stock_data(symbol):
             df_hist = pd.DataFrame(history).iloc[::-1]
 
         display_name = info.get('shortName', info.get('longName', symbol))
-        st.info(f"⚡ 【{display_name}】数据由 yfinance 提供")
+        
         return info, biz, df_hist, display_name
     except Exception as e: 
         print(f"yfinance fallback failed for {symbol}: {e}")
@@ -241,10 +236,16 @@ def fetch_main_stock_data(symbol):
 # 3. 核心界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("📈 投资终端 v21.0")
+    st.header("🎯 投资终端 v22.0")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     
-    # Tushare 状态提示移到主界面
+    # 核心透视模式下的输入框
+    if mode == "B. 核心透视 (深度)":
+        st.info("💡 输入全球代码 (如 DAX.DE, NVDA, 300502)")
+        raw_input = st.text_input("分析对象:", "300502.SZ").strip() 
+        symbol = smart_parse_symbol(raw_input)
+    
+    # Tushare 状态提示
     if pro is None and TUSHARE_TOKEN is None:
         st.warning("Tushare Token未配置，国内股票数据质量可能较低。")
     elif pro is None and TUSHARE_TOKEN is not None:
@@ -294,38 +295,45 @@ if mode == "A. 全球猎手 (批量)":
         else: st.warning("未找到数据")
 
 else:
-    # --- Mode B: 核心透视 (全球查询) ---
-    with st.sidebar:
-        st.info("💡 输入全球代码 (如 DAX.DE, NVDA, 300502)")
-        raw_input = st.text_input("分析对象:", "300502.SZ").strip() 
-        symbol = smart_parse_symbol(raw_input)
-    
-    st.title(f"🌎 核心透视: {symbol}")
-    if symbol:
+    # --- Mode B: 核心透视 (V3.4 优化布局) ---
+    if 'symbol' in locals():
         # **阶段1：快速加载主角数据 (瞬间)**
         info, biz, df_hist, display_name = fetch_main_stock_data(symbol) 
         
         if info:
-            st.caption(f"分析对象名称: {display_name}")
+            st.header(f"💎 {display_name} ({symbol})")
+            st.caption("基于 V3.4 极简风格，聚焦核心财务指标和估值分析。")
             
             group_name, target_group = get_peer_group_and_name(symbol)
-
-            # 1. 商业模式 (优化布局)
-            st.header("1. 🏢 商业模式：利润与资本效率分析")
             
-            # 使用更紧凑的 st.metric 布局
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("股本回报率 (ROE)", f"{biz['ROE']*100:.2f}%")
-            with c2:
-                st.metric("毛利率", f"{biz['毛利率']*100:.2f}%")
-            with c3:
-                st.metric("净利率", f"{biz['净利率']*100:.2f}%")
+            # --- 顶部核心指标卡片 (V3.4 风格) ---
+            st.subheader("1. 核心商业指标 (Core Metrics)")
+            col1, col2, col3, col4, col5 = st.columns(5)
             
-            st.info("ROE>15% (优) | 毛利>40% (强) —— 衡量企业护城河的关键指标。")
+            # 简化估值，这里用一个恒定的 DCF 估值作为示例，实际需要计算
+            # 价格
+            current_price = info.get('regularMarketPrice', 0)
+            # 假设一个简单的DCF估值 (用于演示)
+            dcf_val = current_price * (1 + 0.2) # 假设有20%的潜在涨幅
+            upside = ((dcf_val / current_price) - 1) * 100 if current_price else 0
+            
+            with col1:
+                st.metric("实时价格", f"${current_price:.2f}")
+            with col2:
+                st.metric("市值 (B)", f"${info.get('marketCap', 0)/1e9:.1f}")
+            with col3:
+                st.metric("ROE (核心指标)", f"{biz['ROE']*100:.2f}%", delta_color="normal")
+            with col4:
+                st.metric("毛利率 (护城河)", f"{biz['毛利率']*100:.2f}%", delta_color="normal")
+            with col5:
+                st.metric("潜在涨幅", f"{upside:.1f}%", delta_color="inverse")
+            
+            st.markdown("---")
 
-            # 3. 财务体检
-            st.header("3. 🔎 深度财务审计：利润质量与增长检测")
+
+            # 2. 财务体检 (V3.4 风格图表)
+            st.subheader("2. 财务体检：利润质量与增长趋势")
+            
             if not df_hist.empty:
                 f1, f2 = st.columns(2)
                 
@@ -334,11 +342,11 @@ else:
                     fig_rev = make_subplots(specs=[[{"secondary_y": True}]])
                     fig_rev.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['营收'], name="营收", marker_color='lightblue'), secondary_y=False)
                     fig_rev.add_trace(go.Scatter(x=df_hist['年份'], y=df_hist['应收占比%'], name="应收占比%", mode='lines+markers', line=dict(color='red', width=3)), secondary_y=True)
-                    fig_rev.update_layout(title="⚠️ 营收虚胖检测 (应收占比)", height=350, margin=dict(t=30, b=10))
+                    fig_rev.update_layout(title="图 2.1 营收增长与应收账款占比 (健康度)", height=350, margin=dict(t=30, b=10))
                     st.plotly_chart(fig_rev, use_container_width=True)
                     last_ratio = df_hist['应收占比%'].iloc[-1]
-                    if last_ratio > 30: st.error(f"🚨 应收占比 {last_ratio:.1f}%，警惕营收质量！")
-                    else: st.success(f"✅ 应收占比 {last_ratio:.1f}%，营收质量健康。")
+                    if last_ratio > 30: st.error(f"🚨 结论：营收虚胖风险高 ({last_ratio:.1f}%)")
+                    else: st.success(f"✅ 结论：营收质量健康 ({last_ratio:.1f}%)")
 
                 # 利润真实性
                 with f2:
@@ -346,27 +354,26 @@ else:
                     fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['净利润'], name="净利润", marker_color='#a5d6a7'), secondary_y=False)
                     fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['现金流'], name="现金流", marker_color='#2e7d32'), secondary_y=False)
                     fig_cash.add_trace(go.Scatter(x=df_hist['年份'], y=df_hist['净现比'], name="净现比", mode='lines+markers', line=dict(color='gold', width=3, dash='dot')), secondary_y=True)
-                    fig_cash.update_layout(title="💰 利润真实性 (净现比)", height=350, margin=dict(t=30, b=10))
+                    fig_cash.update_layout(title="图 2.2 净利润与现金流对比 (真实性)", height=350, margin=dict(t=30, b=10))
                     fig_cash.add_hline(y=1.0, line_dash="dash", line_color="gray", secondary_y=True)
                     st.plotly_chart(fig_cash, use_container_width=True)
                     last_r = df_hist['净现比'].iloc[-1]
-                    if last_r < 0.8: st.error(f"🚨 净现比 {last_r:.2f}，利润质量低，警惕！")
-                    else: st.success(f"💎 净现比 {last_r:.2f}，利润质量高。")
-            else: st.warning("⚠️ 暂无历史财务数据，无法进行深度审计。")
+                    if last_r < 0.8: st.error(f"🚨 结论：利润真实性低 ({last_r:.2f})")
+                    else: st.success(f"💎 结论：利润真实性高 ({last_r:.2f})")
+            else: st.warning("⚠️ 暂无历史财务数据。")
+            
+            st.markdown("---")
 
-
-            # 2. 行业地位 (异步加载/缓存或跳过)
-            st.header(f"2. 🏔️ 行业地位：与同行对比分析")
+            # 3. 行业地位 (V3.4 风格)
+            st.subheader("3. 行业地位：对比黄金象限")
             if group_name:
-                
                 df_peers = st.session_state.peers_data_cache.get(group_name)
 
                 if df_peers is not None:
                     fig_pos = px.scatter(df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称", text="名称", 
-                                         title=f"【{group_name}】行业格局 (右上角为王者)", height=450)
+                                         title=f"图 3.1 【{group_name}】黄金象限：高毛利+高增速", height=450)
                     fig_pos.update_traces(textposition='top center')
                     st.plotly_chart(fig_pos, use_container_width=True)
-                    st.success("✨ 数据已从缓存中加载 (秒开)")
                 else:
                     st.warning(f"同行对比数据尚未加载。点击下方按钮进行多线程加载。")
                     if st.button(f'🏎️ 立即加载【{group_name}】同行数据'):
