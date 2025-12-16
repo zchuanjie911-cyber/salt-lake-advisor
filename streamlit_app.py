@@ -227,4 +227,216 @@ def fetch_main_stock_data(symbol):
                 })
             df_hist = pd.DataFrame(history).iloc[::-1]
 
-        display_name = info.get
+        display_name = info.get('shortName', info.get('longName', symbol))
+        
+        return info, biz, df_hist, display_name
+    except Exception as e: 
+        print(f"yfinance fallback failed for {symbol}: {e}")
+        return None, None, None, symbol
+
+# --- ROE & GM 建议函数 ---
+def get_roe_advice(roe):
+    if roe >= 0.25:
+        return "✨ 极高 ROE：卓越的资本效率，具备顶级护城河潜力。", "success"
+    elif roe >= 0.15:
+        return "✅ 优秀 ROE：高于行业平均，体现管理层出色的盈利能力。", "success"
+    elif roe >= 0.10:
+        return "⚠️ 一般 ROE：符合市场标准，需结合估值判断，竞争力普通。", "warning"
+    else:
+        return "❌ 低 ROE：资本效率低下，警惕盈利模式脆弱。", "error"
+
+def get_gm_advice(gm):
+    if gm >= 0.60:
+        return "👑 极高毛利率：产品定价权极强，行业垄断或独家技术。", "success"
+    elif gm >= 0.40:
+        return "✅ 高毛利率：具有较强品牌或成本优势，护城河稳定。", "success"
+    elif gm >= 0.20:
+        return "⚠️ 一般毛利率：行业竞争激烈，产品差异化不足。", "warning"
+    else:
+        return "❌ 低毛利率：纯粹竞争型行业，抗风险能力弱。", "error"
+
+
+# ==========================================
+# 3. 核心界面逻辑
+# ==========================================
+with st.sidebar:
+    st.header("🎯 投资终端 v24.0")
+    mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
+    
+    # 核心透视模式下的输入框
+    if mode == "B. 核心透视 (深度)":
+        st.info("💡 输入全球代码 (如 DAX.DE, NVDA, 300502)")
+        raw_input = st.text_input("分析对象:", "300502.SZ").strip() 
+        symbol = smart_parse_symbol(raw_input)
+    
+    # Tushare 状态提示
+    if 'pro' in globals() and pro is None and TUSHARE_TOKEN is None:
+        st.warning("Tushare Token未配置，国内股票数据质量可能较低。")
+    elif 'pro' in globals() and pro is None and TUSHARE_TOKEN is not None:
+        st.error("Tushare 初始化失败或 Token 无效。")
+    elif 'pro' in globals() and pro is not None:
+        st.success("Tushare 连接成功！")
+        
+    st.divider()
+
+if mode == "A. 全球猎手 (批量)":
+    # --- Mode A: 全球猎手 (批量) (保持不变) ---
+    with st.sidebar:
+        options = list(MARKET_GROUPS.keys()) + ["🔍 自选输入"]
+        choice = st.selectbox("选择战场", options)
+        if choice == "🔍 自选输入":
+            st.info("💡 批量分析仅支持预设的股票池，保证数据准确性。")
+            user_txt = st.text_area("输入 (逗号隔开)", "NVDA, 腾讯控股, 贵州茅台")
+            tickers = [x.strip() for x in user_txt.split(',') if x.strip()]
+        else: tickers = MARKET_GROUPS[choice]
+        dr = st.slider("折现率 (%)", 6, 15, 9)
+    
+    st.title("🌍 全球价值猎手")
+    if tickers:
+        with st.spinner('⚡ 多线程扫描中...'):
+            df_val = fetch_hunter_data_concurrent(tickers, dr)
+            
+        if not df_val.empty:
+            df_val = df_val.sort_values("潜在涨幅%", ascending=False).reset_index(drop=True)
+            st.subheader("1. 估值概览 (优秀者置顶)")
+            
+            fig_dumb = go.Figure()
+            fig_dumb.add_trace(go.Scatter(x=df_val["现价"], y=df_val["名称"], mode='markers', name='现价', marker=dict(color='red', size=12)))
+            fig_dumb.add_trace(go.Scatter(x=df_val["DCF估值"], y=df_val["名称"], mode='markers', name='估值', marker=dict(color='green', size=12, symbol='diamond')))
+            for i in range(len(df_val)):
+                r = df_val.iloc[i]
+                c = 'green' if r['DCF估值'] > r['现价'] else 'red'
+                fig_dumb.add_shape(type="line", x0=r['现价'], y0=r['名称'], x1=r['DCF估值'], y1=r['名称'], line=dict(color=c, width=3))
+            
+            fig_dumb.update_layout(height=max(400, len(df_val)*30), xaxis_title="价格", yaxis=dict(autorange="reversed", type='category', categoryorder='array', categoryarray=df_val['名称']), title="🏆 哑铃榜：最上面的绿线越长，机会越大")
+            st.plotly_chart(fig_dumb, use_container_width=True)
+
+            c1, c2 = st.columns(2)
+            with c1: st.plotly_chart(px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", color_continuous_scale="RdYlGn", title="2. 潜能排行榜"), use_container_width=True)
+            with c2: st.plotly_chart(px.scatter(df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%", text="名称", title="3. 黄金象限 (质优价廉)", color_continuous_scale="RdYlGn"), use_container_width=True)
+            
+            st.dataframe(df_val.style.background_gradient(subset=["潜在涨幅%"], cmap="RdYlGn", vmin=-50, vmax=50), use_container_width=True)
+        else: st.warning("未找到数据")
+
+else:
+    # --- Mode B: 核心透视 (V24.0 优化布局) ---
+    if 'symbol' in locals():
+        # **阶段1：快速加载主角数据 (瞬间)**
+        info, biz, df_hist, display_name = fetch_main_stock_data(symbol) 
+        
+        if info:
+            st.header(f"💎 {display_name} ({symbol})")
+            st.caption("基于 V3.4 极简风格，聚焦核心财务指标和估值分析。")
+            
+            group_name, target_group = get_peer_group_and_name(symbol)
+            
+            # 价格、市值、潜在涨幅 (Metric Cards)
+            current_price = info.get('regularMarketPrice', 0)
+            dcf_val = current_price * (1 + 0.2) 
+            upside = ((dcf_val / current_price) - 1) * 100 if current_price else 0
+
+            col_p, col_m, col_u = st.columns(3)
+            with col_p:
+                st.metric("实时价格", f"${current_price:.2f}")
+            with col_m:
+                st.metric("市值 (B)", f"${info.get('marketCap', 0)/1e9:.1f}")
+            with col_u:
+                st.metric("潜在涨幅", f"{upside:.1f}%", delta_color="inverse")
+            
+            st.markdown("---")
+
+            # --- 核心商业指标 (可视化/Gauge Charts + 建议) ---
+            st.subheader("1. 🛡️ 商业模式与护城河 (Moat Analysis)")
+            
+            val_roe = biz['ROE'] * 100
+            val_gm = biz['毛利率'] * 100
+            roe_advice, roe_style = get_roe_advice(val_roe / 100)
+            gm_advice, gm_style = get_gm_advice(val_gm / 100)
+
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                # ROE Gauge
+                fig_roe = go.Figure(go.Indicator(
+                    mode="gauge+number", value=val_roe, title={'text': "股本回报率 (ROE)"}, 
+                    gauge={'axis': {'range': [0, 40]}, 'bar': {'color': "#00c853" if val_roe > 15 else "#ff4b4b"},
+                           'steps': [{'range': [0, 15], 'color': 'lightgray'}, {'range': [15, 40], 'color': '#d1f4e3'}],
+                           'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': 20}
+                          }
+                ))
+                fig_roe.update_layout(height=250, margin=dict(t=30,b=10))
+                st.plotly_chart(fig_roe, use_container_width=True)
+                st.markdown(f"**ROE 建议:** <span style='color: {'green' if roe_style == 'success' else 'orange' if roe_style == 'warning' else 'red'};'>{roe_advice}</span>", unsafe_allow_html=True)
+                
+            with c2:
+                # 毛利率 Gauge
+                fig_gm = go.Figure(go.Indicator(
+                    mode="gauge+number", value=val_gm, title={'text': "毛利率 (Gross Margin)"}, 
+                    gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#2962ff" if val_gm > 40 else "#ff9800"},
+                           'steps': [{'range': [0, 40], 'color': 'lightgray'}, {'range': [40, 100], 'color': '#c2e3ff'}],
+                           'threshold': {'line': {'color': "darkorange", 'width': 4}, 'thickness': 0.75, 'value': 60}
+                          }
+                ))
+                fig_gm.update_layout(height=250, margin=dict(t=30,b=10))
+                st.plotly_chart(fig_gm, use_container_width=True)
+                st.markdown(f"**毛利建议:** <span style='color: {'green' if gm_style == 'success' else 'orange' if gm_style == 'warning' else 'red'};'>{gm_advice}</span>", unsafe_allow_html=True)
+
+            with c3:
+                # 净利率 Metric (作为补充)
+                st.markdown('<div style="height: 125px;"></div>', unsafe_allow_html=True) # 视觉对齐
+                st.metric("净利率", f"{biz['净利率']*100:.2f}%")
+                if biz['净利率']*100 > 10: st.success("净利率优秀（>10%）")
+                else: st.info("净利率普通")
+            
+            st.markdown("---")
+
+            # 2. 财务体检 (V3.4 风格图表)
+            st.subheader("2. 财务体检：利润质量与增长趋势")
+            
+            if not df_hist.empty:
+                f1, f2 = st.columns(2)
+                
+                # 营收虚胖检测
+                with f1:
+                    fig_rev = make_subplots(specs=[[{"secondary_y": True}]])
+                    fig_rev.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['营收'], name="营收", marker_color='lightblue'), secondary_y=False)
+                    fig_rev.add_trace(go.Scatter(x=df_hist['年份'], y=df_hist['应收占比%'], name="应收占比%", mode='lines+markers', line=dict(color='red', width=3)), secondary_y=True)
+                    fig_rev.update_layout(title="图 2.1 营收增长与应收账款占比 (健康度)", height=350, margin=dict(t=30, b=10))
+                    st.plotly_chart(fig_rev, use_container_width=True)
+                    last_ratio = df_hist['应收占比%'].iloc[-1]
+                    if last_ratio > 30: st.error(f"🚨 结论：营收虚胖风险高 ({last_ratio:.1f}%)")
+                    else: st.success(f"✅ 结论：营收质量健康 ({last_ratio:.1f}%)")
+
+                # 利润真实性
+                with f2:
+                    fig_cash = make_subplots(specs=[[{"secondary_y": True}]])
+                    fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['净利润'], name="净利润", marker_color='#a5d6a7'), secondary_y=False)
+                    fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['现金流'], name="现金流", marker_color='#2e7d32'), secondary_y=False)
+                    fig_cash.add_trace(go.Scatter(x=df_hist['年份'], y=df_hist['净现比'], name="净现比", mode='lines+markers', line=dict(color='gold', width=3, dash='dot')), secondary_y=True)
+                    fig_cash.update_layout(title="图 2.2 净利润与现金流对比 (真实性)", height=350, margin=dict(t=30, b=10))
+                    fig_cash.add_hline(y=1.0, line_dash="dash", line_color="gray", secondary_y=True)
+                    st.plotly_chart(fig_cash, use_container_width=True)
+                    last_r = df_hist['净现比'].iloc[-1]
+                    if last_r < 0.8: st.error(f"🚨 结论：利润真实性低 ({last_r:.2f})")
+                    else: st.success(f"💎 结论：利润真实性高 ({last_r:.2f})")
+            else: st.warning("⚠️ 暂无历史财务数据。")
+            
+            st.markdown("---")
+
+            # 3. 行业地位 (V3.4 风格)
+            st.subheader("3. 行业地位：对比黄金象限")
+            if group_name:
+                df_peers = st.session_state.peers_data_cache.get(group_name)
+
+                if df_peers is not None:
+                    fig_pos = px.scatter(df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称", text="名称", 
+                                         title=f"图 3.1 【{group_name}】黄金象限：高毛利+高增速", height=450)
+                    fig_pos.update_traces(textposition='top center')
+                    st.plotly_chart(fig_pos, use_container_width=True)
+                else:
+                    st.warning(f"同行对比数据尚未加载。点击下方按钮进行多线程加载。")
+                    if st.button(f'🏎️ 立即加载【{group_name}】同行数据'):
+                        load_peers_data(group_name, target_group)
+            else:
+                 st.info("该股票不在预设的同行分析组中，无法进行行业地位对比分析。")
+
+        else: st.error(f"❌ 核心数据获取失败。请检查股票代码 `{symbol}` 是否正确。")
