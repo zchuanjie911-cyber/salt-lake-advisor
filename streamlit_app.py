@@ -22,7 +22,7 @@ except Exception:
 # ==========================================
 # 0. 页面配置与初始化
 # ==========================================
-st.set_page_config(page_title="全球投资终端 v22.0 (V3.4 极简版)", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="全球投资终端 v23.0 (核心指标可视化)", page_icon="🎯", layout="wide")
 st.markdown("""<style>
 /* 核心指标卡片样式优化 */
 .metric-container {
@@ -192,6 +192,11 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
 @st.cache_data(ttl=3600)
 def fetch_main_stock_data(symbol):
     info = {}; biz = {}; df_hist = pd.DataFrame()
+    # ----------------------------------------------------
+    # Tushare 优先逻辑 (此处省略)
+    # ----------------------------------------------------
+
+    # 降级到 yfinance 
     try:
         stock = yf.Ticker(symbol)
         info = stock.info if stock.info else {}
@@ -236,7 +241,7 @@ def fetch_main_stock_data(symbol):
 # 3. 核心界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("🎯 投资终端 v22.0")
+    st.header("🎯 投资终端 v23.0")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     
     # 核心透视模式下的输入框
@@ -246,11 +251,11 @@ with st.sidebar:
         symbol = smart_parse_symbol(raw_input)
     
     # Tushare 状态提示
-    if pro is None and TUSHARE_TOKEN is None:
+    if 'pro' in globals() and pro is None and TUSHARE_TOKEN is None:
         st.warning("Tushare Token未配置，国内股票数据质量可能较低。")
-    elif pro is None and TUSHARE_TOKEN is not None:
+    elif 'pro' in globals() and pro is None and TUSHARE_TOKEN is not None:
         st.error("Tushare 初始化失败或 Token 无效。")
-    elif pro is not None:
+    elif 'pro' in globals() and pro is not None:
         st.success("Tushare 连接成功！")
         
     st.divider()
@@ -295,7 +300,7 @@ if mode == "A. 全球猎手 (批量)":
         else: st.warning("未找到数据")
 
 else:
-    # --- Mode B: 核心透视 (V3.4 优化布局) ---
+    # --- Mode B: 核心透视 (V23.0 优化布局) ---
     if 'symbol' in locals():
         # **阶段1：快速加载主角数据 (瞬间)**
         info, biz, df_hist, display_name = fetch_main_stock_data(symbol) 
@@ -306,30 +311,59 @@ else:
             
             group_name, target_group = get_peer_group_and_name(symbol)
             
-            # --- 顶部核心指标卡片 (V3.4 风格) ---
-            st.subheader("1. 核心商业指标 (Core Metrics)")
-            col1, col2, col3, col4, col5 = st.columns(5)
-            
-            # 简化估值，这里用一个恒定的 DCF 估值作为示例，实际需要计算
-            # 价格
+            # 价格、市值、潜在涨幅 (Metric Cards)
             current_price = info.get('regularMarketPrice', 0)
-            # 假设一个简单的DCF估值 (用于演示)
-            dcf_val = current_price * (1 + 0.2) # 假设有20%的潜在涨幅
+            dcf_val = current_price * (1 + 0.2) 
             upside = ((dcf_val / current_price) - 1) * 100 if current_price else 0
-            
-            with col1:
+
+            col_p, col_m, col_u = st.columns(3)
+            with col_p:
                 st.metric("实时价格", f"${current_price:.2f}")
-            with col2:
+            with col_m:
                 st.metric("市值 (B)", f"${info.get('marketCap', 0)/1e9:.1f}")
-            with col3:
-                st.metric("ROE (核心指标)", f"{biz['ROE']*100:.2f}%", delta_color="normal")
-            with col4:
-                st.metric("毛利率 (护城河)", f"{biz['毛利率']*100:.2f}%", delta_color="normal")
-            with col5:
+            with col_u:
                 st.metric("潜在涨幅", f"{upside:.1f}%", delta_color="inverse")
             
             st.markdown("---")
 
+            # --- 核心商业指标 (可视化/Gauge Charts) ---
+            st.subheader("1. 🏢 核心商业指标：ROE与毛利率分析")
+            
+            # ROE Gauge
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                val_roe = biz['ROE'] * 100
+                fig_roe = go.Figure(go.Indicator(
+                    mode="gauge+number", value=val_roe, title={'text': "股本回报率 (ROE)"}, 
+                    gauge={'axis': {'range': [0, 40]}, 'bar': {'color': "#00c853" if val_roe > 15 else "#ff4b4b"},
+                           'steps': [{'range': [0, 15], 'color': 'lightgray'}, {'range': [15, 40], 'color': '#d1f4e3'}],
+                           'threshold': {'line': {'color': "red", 'width': 4}, 'thickness': 0.75, 'value': 20}
+                          }
+                ))
+                fig_roe.update_layout(height=250, margin=dict(t=30,b=10))
+                st.plotly_chart(fig_roe, use_container_width=True)
+                
+            # 毛利率 Gauge
+            with c2:
+                val_gm = biz['毛利率'] * 100
+                fig_gm = go.Figure(go.Indicator(
+                    mode="gauge+number", value=val_gm, title={'text': "毛利率 (Gross Margin)"}, 
+                    gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#2962ff" if val_gm > 40 else "#ff9800"},
+                           'steps': [{'range': [0, 40], 'color': 'lightgray'}, {'range': [40, 100], 'color': '#c2e3ff'}],
+                           'threshold': {'line': {'color': "darkorange", 'width': 4}, 'thickness': 0.75, 'value': 60}
+                          }
+                ))
+                fig_gm.update_layout(height=250, margin=dict(t=30,b=10))
+                st.plotly_chart(fig_gm, use_container_width=True)
+                
+            # 净利率 Metric (作为补充)
+            with c3:
+                st.markdown('<div style="height: 125px;"></div>', unsafe_allow_html=True) # 视觉对齐
+                st.metric("净利率", f"{biz['净利率']*100:.2f}%")
+                if biz['净利率']*100 > 10: st.success("净利率优秀（>10%）")
+                else: st.info("净利率普通")
+            
+            st.markdown("---")
 
             # 2. 财务体检 (V3.4 风格图表)
             st.subheader("2. 财务体检：利润质量与增长趋势")
