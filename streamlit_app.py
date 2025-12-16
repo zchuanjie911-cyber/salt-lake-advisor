@@ -7,15 +7,16 @@ import plotly.graph_objects as go
 # ==========================================
 # 0. 页面配置
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v7.0 (图表增强版)", page_icon="🦁", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v7.1 (中文版)", page_icon="🦁", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # ==========================================
 # 1. 智能解析与数据字典
 # ==========================================
+# 核心映射表 (代码 -> 中文)
 STOCK_MAP = {
     "AAPL": "苹果", "MSFT": "微软", "GOOG": "谷歌", "AMZN": "亚马逊", "META": "Meta", "TSLA": "特斯拉", "NVDA": "英伟达", "AMD": "超威",
-    "TSM": "台积电", "ASML": "阿斯麦", "BABA": "阿里(美)", "PDD": "拼多多", "JD": "京东", "BIDU": "百度", "NTES": "网易",
+    "TSM": "台积电", "ASML": "阿斯麦", "BABA": "阿里(美)", "PDD": "拼多多", "JD": "京东", "BIDU": "百度", "NTES": "网易", "COIN": "Coinbase",
     "BRK-B": "伯克希尔", "V": "Visa", "MA": "万事达", "COST": "开市客", "MCD": "麦当劳", "KO": "可口可乐", "PEP": "百事", "LLY": "礼来",
     "NVO": "诺和诺德", "UNH": "联合健康", "JPM": "摩根大通", "JNJ": "强生", "PG": "宝洁", "XOM": "埃克森", "CVX": "雪佛龙", "DIS": "迪士尼",
     "0700.HK": "腾讯", "9988.HK": "阿里(港)", "3690.HK": "美团", "0388.HK": "港交所", "0941.HK": "中移动", "0883.HK": "中海油",
@@ -23,6 +24,9 @@ STOCK_MAP = {
     "600519.SS": "茅台", "000858.SZ": "五粮液", "600900.SS": "长电", "300750.SZ": "宁德时代", "002594.SZ": "比亚迪", "600660.SS": "福耀",
     "300760.SZ": "迈瑞", "600036.SS": "招行", "601318.SS": "平安", "601857.SS": "中石油", "601225.SS": "陕煤", "000792.SZ": "盐湖"
 }
+
+# 构建反向映射表 (中文 -> 代码)
+NAME_TO_TICKER = {v: k for k, v in STOCK_MAP.items()}
 
 MARKET_GROUPS = {
     "🇺🇸 美股科技 (AI & Chips)": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "TSM", "ASML", "BABA", "PDD"],
@@ -32,13 +36,21 @@ MARKET_GROUPS = {
 }
 
 def smart_parse_symbol(user_input):
-    """智能代码识别"""
-    code = user_input.strip().upper()
+    """超级智能识别 (支持中文名、纯数字、代码)"""
+    clean_input = user_input.strip()
+    
+    # 1. 尝试匹配中文名
+    if clean_input in NAME_TO_TICKER:
+        return NAME_TO_TICKER[clean_input]
+    
+    # 2. 处理数字代码
+    code = clean_input.upper()
     if code.isdigit():
         if len(code) == 6 and code.startswith('6'): return f"{code}.SS"
         if len(code) == 6 and (code.startswith('0') or code.startswith('3')): return f"{code}.SZ"
         if len(code) == 4: return f"{code}.HK"
         if len(code) == 5 and code.startswith('0'): return f"{code[1:]}.HK"
+        
     return code
 
 def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10):
@@ -66,6 +78,7 @@ def fetch_data(tickers, discount_rate):
     
     for i, raw_sym in enumerate(tickers):
         progress.progress((i + 1) / len(tickers))
+        # 核心：调用智能解析
         symbol = smart_parse_symbol(raw_sym)
         try:
             stock = yf.Ticker(symbol)
@@ -120,7 +133,7 @@ def fetch_data(tickers, discount_rate):
 # 3. 侧边栏与主逻辑
 # ==========================================
 with st.sidebar:
-    st.header("🦁 超级终端 v7.0")
+    st.header("🦁 超级终端 v7.1")
     app_mode = st.radio("📡 选择模式", ["A. 猎手筛选 (批量)", "B. 巅峰对决 (手动PK)"])
     st.divider()
 
@@ -129,7 +142,8 @@ if app_mode == "A. 猎手筛选 (批量)":
         options = list(MARKET_GROUPS.keys()) + ["🔍 自选输入"]
         choice = st.selectbox("选择战场", options)
         if choice == "🔍 自选输入":
-            user_txt = st.text_area("输入代码 (逗号隔开)", "NVDA, TSLA, 600519")
+            st.info("💡 支持中文: `苹果, 茅台, 腾讯`")
+            user_txt = st.text_area("输入 (逗号隔开)", "苹果, 英伟达, 600519, 0700")
             tickers = [x.strip() for x in user_txt.split(',') if x.strip()]
         else:
             tickers = MARKET_GROUPS[choice]
@@ -143,7 +157,7 @@ if app_mode == "A. 猎手筛选 (批量)":
             df_val = df_val.sort_values("潜在涨幅%", ascending=False)
             
             # --- 1. 估值哑铃图 ---
-            st.subheader("⚖️ 1. 价格 vs 价值 (哑铃图)")
+            st.subheader("⚖️ 1. 价格 vs 价值")
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=df_val["现价"], y=df_val["名称"], mode='markers', name='现价', marker=dict(color='red', size=10)))
             fig.add_trace(go.Scatter(x=df_val["DCF估值"], y=df_val["名称"], mode='markers', name='估值', marker=dict(color='green', size=10, symbol='diamond')))
@@ -154,44 +168,25 @@ if app_mode == "A. 猎手筛选 (批量)":
             fig.update_layout(height=400, xaxis_title="价格", yaxis=dict(autorange="reversed"), margin=dict(l=0, r=0, t=30, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- 2. 猎手看板 (新增) ---
-            st.subheader("📊 2. 猎手可视化看板")
+            # --- 2. 猎手看板 ---
+            st.subheader("📊 2. 猎手可视化")
             col1, col2 = st.columns(2)
-            
             with col1:
-                # 潜能排行榜
                 fig_upside = px.bar(
                     df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%",
-                    title="🚀 潜能排行榜 (谁被低估最多?)",
-                    color_continuous_scale="RdYlGn",
-                    text="潜在涨幅%"
+                    title="🚀 潜能排行榜", color_continuous_scale="RdYlGn", text="潜在涨幅%"
                 )
                 fig_upside.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
                 st.plotly_chart(fig_upside, use_container_width=True)
-                
             with col2:
-                # 黄金象限：ROE vs FCF Yield
                 fig_scatter = px.scatter(
                     df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%",
-                    hover_name="名称", text="名称",
-                    title="💎 黄金象限 (寻找右上角的优质股)",
-                    labels={"FCF收益率%": "便宜程度 (FCF Yield)", "ROE%": "赚钱能力 (ROE)"},
-                    color_continuous_scale="RdYlGn"
+                    hover_name="名称", text="名称", title="💎 黄金象限 (右上角最佳)",
+                    labels={"FCF收益率%": "便宜度", "ROE%": "赚钱能力"}, color_continuous_scale="RdYlGn"
                 )
-                # 加辅助线
-                fig_scatter.add_hline(y=15, line_dash="dot", line_color="gray", annotation_text="优质线(ROE>15%)")
-                fig_scatter.add_vline(x=4, line_dash="dot", line_color="gray", annotation_text="低估线(Yield>4%)")
+                fig_scatter.add_hline(y=15, line_dash="dot", line_color="gray")
+                fig_scatter.add_vline(x=4, line_dash="dot", line_color="gray")
                 st.plotly_chart(fig_scatter, use_container_width=True)
-
-            # --- 3. 护城河对比 ---
-            st.subheader("🏰 3. 护城河对比 (毛利率)")
-            df_margin = df_val.sort_values("毛利率%", ascending=False)
-            fig_margin = px.bar(
-                df_margin, x="名称", y="毛利率%", color="毛利率%",
-                title="谁的生意最暴利? (毛利率越高越好)",
-                color_continuous_scale="Blues"
-            )
-            st.plotly_chart(fig_margin, use_container_width=True)
 
             # 数据表
             st.subheader("📋 详细数据表")
@@ -202,8 +197,9 @@ if app_mode == "A. 猎手筛选 (批量)":
 else:
     # --- Mode B: 巅峰对决 ---
     with st.sidebar:
-        st.info("💡 输入代码用逗号隔开")
-        user_input = st.text_area("输入PK名单:", "NVDA, AMD, INTC", height=100)
+        st.info("💡 混输模式: `苹果, 茅台, 000858, NVDA`")
+        default_txt = "苹果, 微软, 谷歌"
+        user_input = st.text_area("输入PK名单:", default_txt, height=100)
         target_list = [x.strip() for x in user_input.split(',') if x.strip()]
         dr_pk = st.slider("折现率 (%)", 6, 15, 9)
 
@@ -226,5 +222,8 @@ else:
                 st.plotly_chart(px.line(df_hist, x="年份", y="营收", color="名称", markers=True, title="营收成长性"), use_container_width=True)
             with c2:
                 st.plotly_chart(px.line(df_hist, x="年份", y="净利润", color="名称", markers=True, title="利润含金量"), use_container_width=True)
+                
+            st.subheader("3. 护城河对比")
+            st.plotly_chart(px.bar(df_hist, x="年份", y="毛利率", color="名称", barmode="group", title="毛利率 (越高越好)"), use_container_width=True)
         else:
             st.error("数据获取失败")
