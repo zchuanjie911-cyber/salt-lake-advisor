@@ -7,13 +7,12 @@ import plotly.graph_objects as go
 # ==========================================
 # 0. 页面配置
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v7.1 (中文版)", page_icon="🦁", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v8.0 (全能对决版)", page_icon="🦁", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # ==========================================
 # 1. 智能解析与数据字典
 # ==========================================
-# 核心映射表 (代码 -> 中文)
 STOCK_MAP = {
     "AAPL": "苹果", "MSFT": "微软", "GOOG": "谷歌", "AMZN": "亚马逊", "META": "Meta", "TSLA": "特斯拉", "NVDA": "英伟达", "AMD": "超威",
     "TSM": "台积电", "ASML": "阿斯麦", "BABA": "阿里(美)", "PDD": "拼多多", "JD": "京东", "BIDU": "百度", "NTES": "网易", "COIN": "Coinbase",
@@ -25,7 +24,6 @@ STOCK_MAP = {
     "300760.SZ": "迈瑞", "600036.SS": "招行", "601318.SS": "平安", "601857.SS": "中石油", "601225.SS": "陕煤", "000792.SZ": "盐湖"
 }
 
-# 构建反向映射表 (中文 -> 代码)
 NAME_TO_TICKER = {v: k for k, v in STOCK_MAP.items()}
 
 MARKET_GROUPS = {
@@ -36,21 +34,14 @@ MARKET_GROUPS = {
 }
 
 def smart_parse_symbol(user_input):
-    """超级智能识别 (支持中文名、纯数字、代码)"""
     clean_input = user_input.strip()
-    
-    # 1. 尝试匹配中文名
-    if clean_input in NAME_TO_TICKER:
-        return NAME_TO_TICKER[clean_input]
-    
-    # 2. 处理数字代码
+    if clean_input in NAME_TO_TICKER: return NAME_TO_TICKER[clean_input]
     code = clean_input.upper()
     if code.isdigit():
         if len(code) == 6 and code.startswith('6'): return f"{code}.SS"
         if len(code) == 6 and (code.startswith('0') or code.startswith('3')): return f"{code}.SZ"
         if len(code) == 4: return f"{code}.HK"
         if len(code) == 5 and code.startswith('0'): return f"{code[1:]}.HK"
-        
     return code
 
 def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10):
@@ -65,41 +56,35 @@ def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10)
     return sum(future_flows) + discounted_terminal
 
 # ==========================================
-# 2. 数据获取 (统一接口)
+# 2. 数据获取
 # ==========================================
 @st.cache_data(ttl=3600)
 def fetch_data(tickers, discount_rate):
-    """拉取数据"""
     financials_history = []
     valuation_snapshot = []
     ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "TSM": 32.5}
     
     progress = st.progress(0)
-    
     for i, raw_sym in enumerate(tickers):
         progress.progress((i + 1) / len(tickers))
-        # 核心：调用智能解析
         symbol = smart_parse_symbol(raw_sym)
         try:
             stock = yf.Ticker(symbol)
             info = stock.info
             inc = stock.income_stmt
             
-            # 基础信息
             cn_name = STOCK_MAP.get(symbol, info.get('shortName', symbol))
             mkt_cap = info.get('marketCap', 0)
             price = info.get('currentPrice', info.get('regularMarketPrice', 0))
             roe = info.get('returnOnEquity', 0) or 0
             gm = info.get('grossMargins', 0) or 0
             
-            # FCF
             fcf = info.get('freeCashflow', 0)
             if fcf is None:
                 op = info.get('operatingCashflow', 0) or 0
                 cap = info.get('capitalExpenditures', 0) or 0
                 fcf = op + cap if cap < 0 else op - cap
             
-            # DCF
             fix_rate = ADR_FIX.get(symbol, 1.0)
             fcf_usd = fcf / fix_rate
             growth = min(max(info.get('earningsGrowth', 0.05) or 0.05, 0.02), 0.25)
@@ -113,117 +98,3 @@ def fetch_data(tickers, discount_rate):
                 "FCF收益率%": round((fcf_usd/mkt_cap)*100, 2) if mkt_cap>0 else 0,
                 "市值(B)": round(mkt_cap/1e9, 2)
             })
-            
-            # 历史趋势 (仅前4年)
-            if not inc.empty:
-                years = inc.columns[:4]
-                for d in years:
-                    financials_history.append({
-                        "代码": symbol, "名称": cn_name, "年份": d.strftime("%Y"),
-                        "营收": inc.loc['Total Revenue', d] if 'Total Revenue' in inc.index else 0,
-                        "净利润": inc.loc['Net Income', d] if 'Net Income' in inc.index else 0,
-                        "毛利率": (inc.loc['Gross Profit', d] / inc.loc['Total Revenue', d]) if 'Gross Profit' in inc.index and 'Total Revenue' in inc.index else 0
-                    })
-        except: continue
-        
-    progress.empty()
-    return pd.DataFrame(financials_history).iloc[::-1], pd.DataFrame(valuation_snapshot)
-
-# ==========================================
-# 3. 侧边栏与主逻辑
-# ==========================================
-with st.sidebar:
-    st.header("🦁 超级终端 v7.1")
-    app_mode = st.radio("📡 选择模式", ["A. 猎手筛选 (批量)", "B. 巅峰对决 (手动PK)"])
-    st.divider()
-
-if app_mode == "A. 猎手筛选 (批量)":
-    with st.sidebar:
-        options = list(MARKET_GROUPS.keys()) + ["🔍 自选输入"]
-        choice = st.selectbox("选择战场", options)
-        if choice == "🔍 自选输入":
-            st.info("💡 支持中文: `苹果, 茅台, 腾讯`")
-            user_txt = st.text_area("输入 (逗号隔开)", "苹果, 英伟达, 600519, 0700")
-            tickers = [x.strip() for x in user_txt.split(',') if x.strip()]
-        else:
-            tickers = MARKET_GROUPS[choice]
-        dr = st.slider("折现率 (%)", 6, 15, 9)
-
-    st.title("🌍 全球价值猎手")
-    if tickers:
-        df_hist, df_val = fetch_data(tickers, dr)
-        
-        if not df_val.empty:
-            df_val = df_val.sort_values("潜在涨幅%", ascending=False)
-            
-            # --- 1. 估值哑铃图 ---
-            st.subheader("⚖️ 1. 价格 vs 价值")
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_val["现价"], y=df_val["名称"], mode='markers', name='现价', marker=dict(color='red', size=10)))
-            fig.add_trace(go.Scatter(x=df_val["DCF估值"], y=df_val["名称"], mode='markers', name='估值', marker=dict(color='green', size=10, symbol='diamond')))
-            for i in range(len(df_val)):
-                r = df_val.iloc[i]
-                c = 'green' if r['DCF估值'] > r['现价'] else 'red'
-                fig.add_shape(type="line", x0=r['现价'], y0=r['名称'], x1=r['DCF估值'], y1=r['名称'], line=dict(color=c, width=2))
-            fig.update_layout(height=400, xaxis_title="价格", yaxis=dict(autorange="reversed"), margin=dict(l=0, r=0, t=30, b=0))
-            st.plotly_chart(fig, use_container_width=True)
-
-            # --- 2. 猎手看板 ---
-            st.subheader("📊 2. 猎手可视化")
-            col1, col2 = st.columns(2)
-            with col1:
-                fig_upside = px.bar(
-                    df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%",
-                    title="🚀 潜能排行榜", color_continuous_scale="RdYlGn", text="潜在涨幅%"
-                )
-                fig_upside.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-                st.plotly_chart(fig_upside, use_container_width=True)
-            with col2:
-                fig_scatter = px.scatter(
-                    df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%",
-                    hover_name="名称", text="名称", title="💎 黄金象限 (右上角最佳)",
-                    labels={"FCF收益率%": "便宜度", "ROE%": "赚钱能力"}, color_continuous_scale="RdYlGn"
-                )
-                fig_scatter.add_hline(y=15, line_dash="dot", line_color="gray")
-                fig_scatter.add_vline(x=4, line_dash="dot", line_color="gray")
-                st.plotly_chart(fig_scatter, use_container_width=True)
-
-            # 数据表
-            st.subheader("📋 详细数据表")
-            st.dataframe(df_val.style.background_gradient(subset=["潜在涨幅%"], cmap="RdYlGn", vmin=-50, vmax=50), use_container_width=True)
-        else:
-            st.warning("暂无数据")
-
-else:
-    # --- Mode B: 巅峰对决 ---
-    with st.sidebar:
-        st.info("💡 混输模式: `苹果, 茅台, 000858, NVDA`")
-        default_txt = "苹果, 微软, 谷歌"
-        user_input = st.text_area("输入PK名单:", default_txt, height=100)
-        target_list = [x.strip() for x in user_input.split(',') if x.strip()]
-        dr_pk = st.slider("折现率 (%)", 6, 15, 9)
-
-    st.title("⚔️ 巅峰对决")
-    if target_list:
-        df_hist, df_val = fetch_data(target_list, dr_pk)
-        if not df_val.empty:
-            st.subheader("1. 核心指标 PK")
-            st.dataframe(
-                df_val.set_index("名称").style
-                .highlight_max(subset=["潜在涨幅%", "ROE%", "毛利率%", "FCF收益率%"], color='lightgreen')
-                .highlight_min(subset=["潜在涨幅%", "ROE%", "毛利率%"], color='pink')
-                .format({"市值(B)": "{:.2f}", "潜在涨幅%": "{:.2f}"}),
-                use_container_width=True
-            )
-            
-            st.subheader("2. 趋势厮杀")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.plotly_chart(px.line(df_hist, x="年份", y="营收", color="名称", markers=True, title="营收成长性"), use_container_width=True)
-            with c2:
-                st.plotly_chart(px.line(df_hist, x="年份", y="净利润", color="名称", markers=True, title="利润含金量"), use_container_width=True)
-                
-            st.subheader("3. 护城河对比")
-            st.plotly_chart(px.bar(df_hist, x="年份", y="毛利率", color="名称", barmode="group", title="毛利率 (越高越好)"), use_container_width=True)
-        else:
-            st.error("数据获取失败")
