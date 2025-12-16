@@ -7,15 +7,17 @@ import plotly.graph_objects as go
 # ==========================================
 # 0. 页面配置
 # ==========================================
-st.set_page_config(page_title="核心三维分析 v10.0", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v11.0", page_icon="🦁", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # ==========================================
-# 1. 基础数据与映射
+# 1. 数据字典与智能识别
 # ==========================================
 STOCK_MAP = {
     "AAPL": "苹果", "MSFT": "微软", "GOOG": "谷歌", "AMZN": "亚马逊", "META": "Meta", "TSLA": "特斯拉", "NVDA": "英伟达", "AMD": "超威",
     "TSM": "台积电", "ASML": "阿斯麦", "BABA": "阿里(美)", "PDD": "拼多多", "JD": "京东", "BIDU": "百度", "NTES": "网易",
+    "BRK-B": "伯克希尔", "V": "Visa", "MA": "万事达", "COST": "开市客", "MCD": "麦当劳", "KO": "可口可乐", "PEP": "百事", "LLY": "礼来",
+    "NVO": "诺和诺德", "UNH": "联合健康", "JPM": "摩根大通", "JNJ": "强生", "PG": "宝洁", "XOM": "埃克森", "CVX": "雪佛龙", "DIS": "迪士尼",
     "0700.HK": "腾讯", "9988.HK": "阿里(港)", "3690.HK": "美团", "0388.HK": "港交所", "0941.HK": "中移动", "0883.HK": "中海油",
     "1299.HK": "友邦", "0005.HK": "汇丰", "1088.HK": "神华", "1810.HK": "小米", "2015.HK": "理想", "0981.HK": "中芯国际",
     "600519.SS": "茅台", "000858.SZ": "五粮液", "600900.SS": "长电", "300750.SZ": "宁德时代", "002594.SZ": "比亚迪", "600660.SS": "福耀",
@@ -23,11 +25,11 @@ STOCK_MAP = {
 }
 NAME_TO_TICKER = {v: k for k, v in STOCK_MAP.items()}
 
-# 用于“行业地位”对比的默认参照组
 MARKET_GROUPS = {
-    "科技巨头": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "NVDA", "TSLA", "TSM", "0700.HK", "BABA"],
-    "中国核心资产": ["600519.SS", "000858.SZ", "300750.SZ", "002594.SZ", "601318.SS", "600036.SS", "000792.SZ"],
-    "高股息/资源": ["0883.HK", "1088.HK", "601857.SS", "601225.SS", "600900.SS", "0941.HK"]
+    "🇺🇸 美股科技 (AI & Chips)": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "TSM", "ASML", "BABA", "PDD"],
+    "🇺🇸 美股护城河 (Moat & Value)": ["BRK-B", "V", "MA", "COST", "MCD", "KO", "PEP", "LLY", "NVO", "UNH", "JPM", "JNJ", "PG", "XOM", "CVX", "DIS", "NKE", "O", "WMT"],
+    "🇭🇰 港股核心 (High Div & Tech)": ["0700.HK", "9988.HK", "3690.HK", "0388.HK", "0941.HK", "0883.HK", "1299.HK", "0005.HK", "1088.HK", "1810.HK", "2015.HK"],
+    "🇨🇳 A股核心 (Core Assets)": ["600519.SS", "000858.SZ", "600900.SS", "300750.SZ", "002594.SZ", "600660.SS", "300760.SZ", "600036.SS", "601318.SS", "601857.SS", "601225.SS"]
 }
 
 def smart_parse_symbol(user_input):
@@ -41,9 +43,69 @@ def smart_parse_symbol(user_input):
         if len(code) == 5 and code.startswith('0'): return f"{code[1:]}.HK"
     return code
 
+def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10):
+    if fcf <= 0: return 0
+    future_flows = []
+    for i in range(1, years + 1):
+        flow = fcf * ((1 + growth_rate) ** i)
+        discounted = flow / ((1 + discount_rate) ** i)
+        future_flows.append(discounted)
+    terminal_val = (fcf * ((1 + growth_rate) ** years) * (1 + terminal_rate)) / (discount_rate - terminal_rate)
+    discounted_terminal = terminal_val / ((1 + discount_rate) ** years)
+    return sum(future_flows) + discounted_terminal
+
+# ==========================================
+# 2. 模式A专用：猎手批量获取
+# ==========================================
 @st.cache_data(ttl=3600)
-def fetch_analysis_data(symbol):
-    """获取单只股票的详细财务数据"""
+def fetch_hunter_data(tickers, discount_rate):
+    snapshot = []
+    ADR_FIX = {"PDD": 7.25, "BABA": 7.25, "TSM": 32.5}
+    progress = st.progress(0)
+    
+    for i, raw_sym in enumerate(tickers):
+        progress.progress((i + 1) / len(tickers))
+        symbol = smart_parse_symbol(raw_sym)
+        try:
+            stock = yf.Ticker(symbol)
+            info = stock.info
+            cn_name = STOCK_MAP.get(symbol, info.get('shortName', symbol))
+            mkt_cap = info.get('marketCap', 0)
+            price = info.get('currentPrice', info.get('regularMarketPrice', 0))
+            roe = info.get('returnOnEquity', 0) or 0
+            
+            fcf = info.get('freeCashflow', 0)
+            if fcf is None:
+                op = info.get('operatingCashflow', 0) or 0
+                cap = info.get('capitalExpenditures', 0) or 0
+                fcf = op + cap if cap < 0 else op - cap
+            
+            fix_rate = ADR_FIX.get(symbol, 1.0)
+            fcf_usd = fcf / fix_rate
+            growth = min(max(info.get('earningsGrowth', 0.05) or 0.05, 0.02), 0.25)
+            intrinsic = calculate_dcf(fcf_usd, growth, discount_rate/100)
+            upside = (intrinsic - mkt_cap) / mkt_cap if mkt_cap > 0 else 0
+            
+            item = {}
+            item["代码"] = symbol
+            item["名称"] = cn_name
+            item["现价"] = price
+            item["潜在涨幅%"] = round(upside*100, 2)
+            item["DCF估值"] = round(price*(1+upside), 2)
+            item["ROE%"] = round(roe*100, 2)
+            item["FCF收益率%"] = round((fcf_usd/mkt_cap)*100, 2) if mkt_cap > 0 else 0
+            item["市值(B)"] = round(mkt_cap/1e9, 2)
+            snapshot.append(item)
+        except: continue
+        
+    progress.empty()
+    return pd.DataFrame(snapshot)
+
+# ==========================================
+# 3. 模式B专用：深度透视获取
+# ==========================================
+@st.cache_data(ttl=3600)
+def fetch_deep_data(symbol):
     try:
         stock = yf.Ticker(symbol)
         info = stock.info
@@ -51,17 +113,17 @@ def fetch_analysis_data(symbol):
         bal = stock.balance_sheet
         cf = stock.cashflow
         
-        # 1. 商业模式数据
-        biz_model = {
+        # 商业模式
+        biz = {
             "ROE": info.get('returnOnEquity', 0),
             "毛利率": info.get('grossMargins', 0),
             "净利率": info.get('profitMargins', 0)
         }
         
-        # 2. 财务历史数据 (用于图表)
+        # 历史趋势 (最近5年)
         history = []
         if not inc.empty:
-            years = inc.columns[:5] # 取最近5年
+            years = inc.columns[:5]
             for d in years:
                 item = {}
                 item["年份"] = d.strftime("%Y")
@@ -70,165 +132,147 @@ def fetch_analysis_data(symbol):
                 item["净利润"] = inc.loc['Net Income', d] if 'Net Income' in inc.index else 0
                 item["现金流"] = cf.loc['Operating Cash Flow', d] if 'Operating Cash Flow' in cf.index else 0
                 history.append(item)
+                
+        # 同行对比 (简单查找)
+        peers_data = []
+        target_group = MARKET_GROUPS["🇺🇸 美股科技 (AI & Chips)"] # 默认
+        for k, v in MARKET_GROUPS.items():
+            if symbol in v: target_group = v; break
         
-        return info, biz_model, pd.DataFrame(history).iloc[::-1]
-    except: return None, None, pd.DataFrame()
-
-@st.cache_data(ttl=3600)
-def fetch_peers_data(current_symbol):
-    """获取同行业对比数据 (用于行业地位)"""
-    # 简单逻辑：找到当前股票所在的组，或者默认跟科技股比
-    target_group = MARKET_GROUPS["科技巨头"]
-    for group_name, tickers in MARKET_GROUPS.items():
-        if current_symbol in tickers:
-            target_group = tickers
-            break
+        for p in target_group:
+            try:
+                pi = yf.Ticker(p).info
+                peers_data.append({
+                    "名称": STOCK_MAP.get(p, p),
+                    "市值(B)": (pi.get('marketCap', 0) or 0)/1e9,
+                    "毛利率%": (pi.get('grossMargins', 0) or 0)*100,
+                    "营收增长%": (pi.get('revenueGrowth', 0) or 0)*100
+                })
+            except: continue
             
-    peers_data = []
-    for t in target_group:
-        try:
-            s = yf.Ticker(t)
-            i = s.info
-            peers_data.append({
-                "代码": t,
-                "名称": STOCK_MAP.get(t, t),
-                "市值(B)": (i.get('marketCap', 0) or 0) / 1e9,
-                "毛利率%": (i.get('grossMargins', 0) or 0) * 100,
-                "营收增长%": (i.get('revenueGrowth', 0) or 0) * 100
-            })
-        except: continue
-    return pd.DataFrame(peers_data)
+        return info, biz, pd.DataFrame(history).iloc[::-1], pd.DataFrame(peers_data)
+    except: return None, None, pd.DataFrame(), pd.DataFrame()
 
 # ==========================================
-# 3. 主界面逻辑
+# 4. 主逻辑与侧边栏
 # ==========================================
 with st.sidebar:
-    st.header("🎯 核心三维分析")
-    st.info("请输入代码或中文，如 `600519` 或 `英伟达`")
-    raw_input = st.text_input("分析对象:", "NVDA").strip()
-    symbol = smart_parse_symbol(raw_input)
+    st.header("🦁 超级终端 v11.0")
+    mode = st.radio("📡 选择模式", ["A. 全球猎手 (筛选与估值)", "B. 核心透视 (商业与体检)"])
+    st.divider()
 
-st.title(f"📊 个股核心报告: {symbol}")
-
-if symbol:
-    info, biz, df_hist = fetch_analysis_data(symbol)
+# -----------------
+# 模式 A: 全球猎手
+# -----------------
+if mode == "A. 全球猎手 (筛选与估值)":
+    with st.sidebar:
+        options = list(MARKET_GROUPS.keys()) + ["🔍 自选输入"]
+        choice = st.selectbox("选择战场", options)
+        if choice == "🔍 自选输入":
+            st.info("💡 支持中文: `苹果, 茅台`")
+            user_txt = st.text_area("输入 (逗号隔开)", "NVDA, TSLA, 600519")
+            tickers = [x.strip() for x in user_txt.split(',') if x.strip()]
+        else:
+            tickers = MARKET_GROUPS[choice]
+        dr = st.slider("折现率 (%)", 6, 15, 9)
     
-    if info and not df_hist.empty:
-        cn_name = STOCK_MAP.get(symbol, info.get('shortName', symbol))
-        st.subheader(f"{cn_name}")
-
-        # ==========================================
-        # 第一维：商业模式 (好生意吗？)
-        # ==========================================
-        st.markdown("---")
-        st.header("1. 🏢 商业模式判研")
-        
-        c1, c2, c3 = st.columns(3)
-        
-        # 1. ROE 仪表盘
-        with c1:
-            val = biz['ROE'] * 100
-            fig = go.Figure(go.Indicator(
-                mode = "gauge+number", value = val,
-                title = {'text': "ROE (赚钱效率)"},
-                gauge = {'axis': {'range': [0, 40]},
-                         'bar': {'color': "#00c853" if val > 15 else "#ff4b4b"},
-                         'steps': [{'range': [0, 15], 'color': "#f0f0f0"}, {'range': [15, 40], 'color': "#e8f5e9"}]}
-            ))
-            fig.update_layout(height=250, margin=dict(l=10,r=10,t=40,b=10))
-            st.plotly_chart(fig, use_container_width=True)
+    st.title("🌍 全球价值猎手")
+    if tickers:
+        df_val = fetch_hunter_data(tickers, dr)
+        if not df_val.empty:
+            df_val = df_val.sort_values("潜在涨幅%", ascending=False)
             
-            check = "✅ 优秀" if val > 15 else "⚠️ 一般"
-            st.caption(f"**结论**: {check}。ROE反映股东投入的每一块钱能生出多少利。>15%为门槛。")
+            # 图表区
+            st.subheader("1. 估值概览 (Price vs Value)")
+            fig_dumb = go.Figure()
+            fig_dumb.add_trace(go.Scatter(x=df_val["现价"], y=df_val["名称"], mode='markers', name='现价', marker=dict(color='red', size=12)))
+            fig_dumb.add_trace(go.Scatter(x=df_val["DCF估值"], y=df_val["名称"], mode='markers', name='估值', marker=dict(color='green', size=12, symbol='diamond')))
+            for i in range(len(df_val)):
+                r = df_val.iloc[i]
+                c = 'green' if r['DCF估值'] > r['现价'] else 'red'
+                fig_dumb.add_shape(type="line", x0=r['现价'], y0=r['名称'], x1=r['DCF估值'], y1=r['名称'], line=dict(color=c, width=3))
+            fig_dumb.update_layout(height=400, xaxis_title="价格", yaxis=dict(autorange="reversed"))
+            st.plotly_chart(fig_dumb, use_container_width=True)
 
-        # 2. 毛利率 仪表盘
-        with c2:
-            val = biz['毛利率'] * 100
-            fig = go.Figure(go.Indicator(
-                mode = "gauge+number", value = val,
-                title = {'text': "毛利率 (护城河)"},
-                gauge = {'axis': {'range': [0, 100]},
-                         'bar': {'color': "#2962ff" if val > 40 else "#ff9800"},
-                         'steps': [{'range': [0, 40], 'color': "#f0f0f0"}]}
-            ))
-            fig.update_layout(height=250, margin=dict(l=10,r=10,t=40,b=10))
-            st.plotly_chart(fig, use_container_width=True)
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("2. 潜能排行榜")
+                fig_up = px.bar(df_val, x="名称", y="潜在涨幅%", color="潜在涨幅%", color_continuous_scale="RdYlGn", text="潜在涨幅%")
+                fig_up.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+                st.plotly_chart(fig_up, use_container_width=True)
+            with c2:
+                st.subheader("3. 黄金象限 (质优价廉)")
+                fig_sc = px.scatter(df_val, x="FCF收益率%", y="ROE%", size="市值(B)", color="潜在涨幅%", 
+                                    text="名称", labels={"FCF收益率%": "便宜度", "ROE%": "赚钱力"}, color_continuous_scale="RdYlGn")
+                fig_sc.add_hline(y=15, line_dash="dot"); fig_sc.add_vline(x=4, line_dash="dot")
+                st.plotly_chart(fig_sc, use_container_width=True)
             
-            check = "🏰 极深" if val > 60 else ("🛡️ 稳固" if val > 40 else "⚔️ 激烈")
-            st.caption(f"**结论**: {check}。毛利率越高，定价权越强，越不怕价格战。")
+            st.dataframe(df_val.set_index("名称").style.background_gradient(subset=["潜在涨幅%"], cmap="RdYlGn", vmin=-50, vmax=50), use_container_width=True)
+        else: st.warning("未找到数据")
 
-        # 3. 净利率 仪表盘
-        with c3:
-            val = biz['净利率'] * 100
-            st.metric("净利率 (最终落袋)", f"{val:.2f}%")
-            st.progress(min(int(val), 100))
-            st.info("""
-            **判研逻辑**: 
-            * **ROE > 20%**: 顶级印钞机
-            * **毛利 > 40%**: 具备竞争优势
-            * **净利 > 20%**: 盈利质量极高
-            """)
+# -----------------
+# 模式 B: 核心透视
+# -----------------
+else:
+    with st.sidebar:
+        st.info("💡 深入分析单只股票")
+        raw_input = st.text_input("分析对象:", "NVDA").strip()
+        symbol = smart_parse_symbol(raw_input)
+    
+    st.title(f"📊 核心透视: {symbol}")
+    if symbol:
+        info, biz, df_hist, df_peers = fetch_deep_data(symbol)
+        
+        if info:
+            cn_name = STOCK_MAP.get(symbol, info.get('shortName', symbol))
+            st.caption(f"正在分析: {cn_name}")
 
-        # ==========================================
-        # 第二维：行业地位与周期 (老大还是小弟？)
-        # ==========================================
-        st.markdown("---")
-        st.header("2. 🏔️ 行业地位与周期")
-        
-        # 自动拉取同行
-        df_peers = fetch_peers_data(symbol)
-        
-        col_p1, col_p2 = st.columns([2, 1])
-        
-        with col_p1:
+            # 1. 商业模式
+            st.markdown("---")
+            st.header("1. 🏢 商业模式仪表盘")
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                val = biz['ROE'] * 100
+                fig = go.Figure(go.Indicator(mode="gauge+number", value=val, title={'text': "ROE (赚钱效率)"}, 
+                    gauge={'axis': {'range': [0, 40]}, 'bar': {'color': "#00c853" if val>15 else "#ff4b4b"}, 'steps': [{'range': [0, 15], 'color': "#f0f0f0"}]}))
+                fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=10))
+                st.plotly_chart(fig, use_container_width=True)
+            with c2:
+                val = biz['毛利率'] * 100
+                fig = go.Figure(go.Indicator(mode="gauge+number", value=val, title={'text': "毛利率 (护城河)"}, 
+                    gauge={'axis': {'range': [0, 100]}, 'bar': {'color': "#2962ff" if val>40 else "#ff9800"}, 'steps': [{'range': [0, 40], 'color': "#f0f0f0"}]}))
+                fig.update_layout(height=250, margin=dict(l=10,r=10,t=30,b=10))
+                st.plotly_chart(fig, use_container_width=True)
+            with c3:
+                st.metric("净利率", f"{biz['净利率']*100:.2f}%")
+                st.info("标准：ROE>15% (优) | 毛利>40% (强)")
+
+            # 2. 行业地位
+            st.markdown("---")
+            st.header("2. 🏔️ 行业地位气泡图")
             if not df_peers.empty:
-                # 气泡图：横轴=毛利率，纵轴=营收增长，大小=市值
-                fig_pos = px.scatter(
-                    df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称",
-                    text="名称", title="行业格局图 (右上角为 最强+最快)",
-                    labels={"毛利率%": "竞争力 (毛利率)", "营收增长%": "成长性 (增速)"},
-                    height=400
-                )
-                # 标记当前股票
+                fig_pos = px.scatter(df_peers, x="毛利率%", y="营收增长%", size="市值(B)", color="名称", text="名称", 
+                                     title="右上角=最强+最快", labels={"毛利率%": "竞争力", "营收增长%": "成长性"}, height=450)
                 fig_pos.update_traces(textposition='top center')
                 st.plotly_chart(fig_pos, use_container_width=True)
-            else:
-                st.warning("暂无同行数据对比")
+            else: st.warning("暂无同行数据")
 
-        with col_p2:
-            st.markdown("#### 📈 自身成长周期")
-            # 简单的营收趋势线
-            fig_cycle = px.line(df_hist, x="年份", y="营收", markers=True, title="营收历史走势")
-            fig_cycle.update_traces(line_color='#6200ea', line_width=3)
-            fig_cycle.update_layout(height=300)
-            st.plotly_chart(fig_cycle, use_container_width=True)
-            st.caption("看曲线斜率：向上陡峭=成长期；走平=成熟期；向下=衰退期。")
-
-        # ==========================================
-        # 第三维：财务分析 (真假与健康)
-        # ==========================================
-        st.markdown("---")
-        st.header("3. 🔎 财务质量体检")
-        
-        f1, f2 = st.columns(2)
-        
-        # 1. 营收含金量 (营收 vs 应收)
-        with f1:
-            fig_rev = go.Figure()
-            fig_rev.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['营收'], name='总营收', marker_color='lightblue'))
-            fig_rev.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['应收'], name='应收账款', marker_color='orange'))
-            fig_rev.update_layout(title="营收含金量 (橙柱越低越好)", barmode='group')
-            st.plotly_chart(fig_rev, use_container_width=True)
-            st.warning("**关键点**: 如果橙色柱子(应收)增长比蓝色(营收)快，说明在压货，业绩有水分。")
-            
-        # 2. 利润含金量 (利润 vs 现金流)
-        with f2:
-            fig_cash = go.Figure()
-            fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['净利润'], name='净利润 (纸面)', marker_color='#a5d6a7'))
-            fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['现金流'], name='现金流 (真钱)', marker_color='#2e7d32'))
-            fig_cash.update_layout(title="利润含金量 (深绿覆盖浅绿为优)", barmode='overlay')
-            st.plotly_chart(fig_cash, use_container_width=True)
-            st.success("**关键点**: 现金流(深绿)长期高于净利润(浅绿)，才是真正的赚钱机器(如茅台、腾讯)。")
-
-    else:
-        st.error("数据获取失败，请检查代码拼写。")
+            # 3. 财务体检
+            st.markdown("---")
+            st.header("3. 🔎 财务质量体检")
+            if not df_hist.empty:
+                f1, f2 = st.columns(2)
+                with f1:
+                    fig_rev = go.Figure()
+                    fig_rev.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['营收'], name='营收', marker_color='lightblue'))
+                    fig_rev.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['应收'], name='应收', marker_color='orange'))
+                    fig_rev.update_layout(title="营收含金量 (橙柱越低越好)", barmode='group')
+                    st.plotly_chart(fig_rev, use_container_width=True)
+                with f2:
+                    fig_cash = go.Figure()
+                    fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['净利润'], name='净利润', marker_color='#a5d6a7'))
+                    fig_cash.add_trace(go.Bar(x=df_hist['年份'], y=df_hist['现金流'], name='现金流', marker_color='#2e7d32'))
+                    fig_cash.update_layout(title="利润含金量 (深绿覆盖浅绿为优)", barmode='overlay')
+                    st.plotly_chart(fig_cash, use_container_width=True)
+            else: st.warning("暂无历史数据")
+        else: st.error("数据获取失败")
