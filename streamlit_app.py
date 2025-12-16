@@ -50,3 +50,20 @@ STOCK_MAP = {
 MARKET_GROUPS = {
     "🇺🇸 美股科技 (AI & Chips)": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "TSM", "ASML", "INTC", "CRM", "ORCL", "BABA", "PDD"],
     "🇺🇸 美股护城河 (Moat & Value)": ["BRK-B", "V", "MA", "COST", "MCD", "KO", "PEP", "LLY", "NVO", "UNH", "JPM", "JNJ", "PG", "XOM", "CVX", "DIS", "NKE", "O", "WMT"],
+    "🇭🇰 港股核心 (High Div & Tech)": ["0700.HK", "9988.HK", "3690.HK", "0388.HK", "0941.HK", "0883.HK", "1299.HK", "0005.HK", "1088.HK", "1810.HK", "2015.HK"],
+    "🇨🇳 A股核心 (Core Assets)": ["600519.SS", "000858.SZ", "600900.SS", "300750.SZ", "002594.SZ", "600660.SS", "300760.SZ", "600036.SS", "601318.SS", "601857.SS", "601225.SS", "000792.SZ", "600030.SS", "600276.SS"]
+}
+
+# ==========================================
+# 2. 数据获取 (含汇率修正)
+# ==========================================
+@st.cache_data(ttl=3600)
+def fetch_financials(group_name):
+    tickers = MARKET_GROUPS[group_name]
+    data_list = []
+    
+    # 汇率修正补丁
+    ADR_FIX = {
+        "PDD": 7.25, 
+        "BABA": 7.25, 
+        "BIDU": 7.25
