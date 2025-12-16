@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 # ==========================================
 # 0. 页面配置与初始化
 # ==========================================
-st.set_page_config(page_title="全球价值投资超级终端 v14.1 (容错加强版)", page_icon="🛡️", layout="wide")
+st.set_page_config(page_title="全球价值投资超级终端 v14.2 (中文名修复版)", page_icon="🛡️", layout="wide")
 st.markdown("""<style>.stApp {background-color: #f8f9fa;} .big-font {font-size:20px !important; font-weight: bold;} div[data-testid="stMetricValue"] {font-size: 24px; color: #0f52ba;}</style>""", unsafe_allow_html=True)
 
 # 初始化会话状态 (用于存储高延迟的同行数据)
@@ -19,7 +19,7 @@ if 'current_peer_group' not in st.session_state:
     st.session_state.current_peer_group = None
 
 # ==========================================
-# 1. 数据字典与智能识别
+# 1. 数据字典与智能识别 (强化中文匹配)
 # ==========================================
 STOCK_MAP = {
     "AAPL": "苹果", "MSFT": "微软", "GOOG": "谷歌", "AMZN": "亚马逊", "META": "Meta", "TSLA": "特斯拉", "NVDA": "英伟达", "AMD": "超威",
@@ -28,10 +28,16 @@ STOCK_MAP = {
     "NVO": "诺和诺德", "UNH": "联合健康", "JPM": "摩根大通", "JNJ": "强生", "PG": "宝洁", "XOM": "埃克森", "CVX": "雪佛龙", "DIS": "迪士尼",
     "0700.HK": "腾讯", "9988.HK": "阿里(港)", "3690.HK": "美团", "0388.HK": "港交所", "0941.HK": "中移动", "0883.HK": "中海油",
     "1299.HK": "友邦", "0005.HK": "汇丰", "1088.HK": "神华", "1810.HK": "小米", "2015.HK": "理想", "0981.HK": "中芯国际",
-    "600519.SS": "茅台", "000858.SZ": "五粮液", "600900.SS": "长电", "300750.SZ": "宁德时代", "002594.SZ": "比亚迪", "600660.SS": "福耀",
+    "600519.SS": "贵州茅台", "000858.SZ": "五粮液", "600900.SS": "长电", "300750.SZ": "宁德时代", "002594.SZ": "比亚迪", "600660.SS": "福耀",
     "300760.SZ": "迈瑞", "600036.SS": "招行", "601318.SS": "平安", "601857.SS": "中石油", "601225.SS": "陕煤", "000792.SZ": "盐湖"
 }
+# 增加简写映射
 NAME_TO_TICKER = {v: k for k, v in STOCK_MAP.items()}
+NAME_TO_TICKER["茅台"] = "600519.SS"
+NAME_TO_TICKER["苹果"] = "AAPL"
+NAME_TO_TICKER["英伟达"] = "NVDA"
+NAME_TO_TICKER["腾讯"] = "0700.HK"
+
 
 MARKET_GROUPS = {
     "🇺🇸 美股科技 (AI & Chips)": ["AAPL", "MSFT", "GOOG", "AMZN", "META", "TSLA", "NVDA", "AMD", "TSM", "ASML", "BABA", "PDD"],
@@ -106,7 +112,7 @@ def fetch_main_stock_data(symbol):
         
         # 核心数据检查
         if not info or info.get('regularMarketPrice') is None:
-             return None, None, None # 无法获取核心信息
+             raise ValueError("Essential financial data missing.")
 
         # 历史趋势
         history = []
@@ -121,13 +127,12 @@ def fetch_main_stock_data(symbol):
                 
                 history.append({
                     "年份": d.strftime("%Y"), "营收": rev, "应收": rec, "净利润": ni, "现金流": ocf,
-                    "应收占比%": (rec / rev) * 100 if rev > 1 else 0, # rev>1防止除以0或极小值
-                    "净现比": (ocf / ni) if abs(ni) > 1 else 0 # abs(ni)>1防止除以0或极小值
+                    "应收占比%": (rec / rev) * 100 if rev > 1 else 0, 
+                    "净现比": (ocf / ni) if abs(ni) > 1 else 0 
                 })
         
         return info, biz, pd.DataFrame(history).iloc[::-1]
     except Exception as e: 
-        # 打印错误到日志，但前端只显示通用信息
         print(f"Error fetching data for {symbol}: {e}")
         return None, None, None
 
@@ -188,7 +193,7 @@ def fetch_hunter_data_concurrent(tickers, discount_rate):
 # 3. 核心界面逻辑
 # ==========================================
 with st.sidebar:
-    st.header("⚡ 超级终端 v14.1")
+    st.header("⚡ 超级终端 v14.2")
     mode = st.radio("📡 选择模式", ["A. 全球猎手 (批量)", "B. 核心透视 (深度)"])
     st.divider()
 
@@ -198,7 +203,7 @@ if mode == "A. 全球猎手 (批量)":
         options = list(MARKET_GROUPS.keys()) + ["🔍 自选输入"]
         choice = st.selectbox("选择战场", options)
         if choice == "🔍 自选输入":
-            user_txt = st.text_area("输入 (逗号隔开)", "NVDA, TSLA, 600519")
+            user_txt = st.text_area("输入 (逗号隔开)", "NVDA, TSLA, 贵州茅台")
             tickers = [x.strip() for x in user_txt.split(',') if x.strip()]
         else: tickers = MARKET_GROUPS[choice]
         dr = st.slider("折现率 (%)", 6, 15, 9)
@@ -233,7 +238,7 @@ if mode == "A. 全球猎手 (批量)":
 else:
     # --- Mode B (核心透视) - 阶段加载核心 ---
     with st.sidebar:
-        raw_input = st.text_input("分析对象:", "NVDA").strip()
+        raw_input = st.text_input("分析对象:", "贵州茅台").strip() # 默认值改为全称
         symbol = smart_parse_symbol(raw_input)
     
     st.title(f"📊 核心透视: {symbol}")
