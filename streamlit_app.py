@@ -64,6 +64,25 @@ def calculate_dcf(fcf, growth_rate, discount_rate, terminal_rate=0.03, years=10)
     # 阶段1: 高速增长期
     future_cash_flows = []
     for i in range(1, years + 1):
+        # 计算第i年的现金流
         cash = fcf * ((1 + growth_rate) ** i)
+        # 折现回今天
         discounted_cash = cash / ((1 + discount_rate) ** i)
-        future_cash_flows.append(discounted
+        future_cash_flows.append(discounted_cash)
+    
+    sum_stage1 = sum(future_cash_flows)
+    
+    # 阶段2: 永续年金
+    final_year_cash = fcf * ((1 + growth_rate) ** years)
+    terminal_value = final_year_cash * (1 + terminal_rate) / (discount_rate - terminal_rate)
+    discounted_terminal_value = terminal_value / ((1 + discount_rate) ** years)
+    
+    return sum_stage1 + discounted_terminal_value
+
+@st.cache_data(ttl=3600)
+def fetch_financials(group_name, discount_rate_input):
+    tickers = MARKET_GROUPS[group_name]
+    data_list = []
+    
+    # 汇率修正补丁
+    ADR_FIX = {"PDD":
